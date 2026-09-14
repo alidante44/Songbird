@@ -41,6 +41,8 @@ export function registerRemoteUploadRoutes(app, deps) {
     storageEncryption = defaultStorageEncryption,
     enqueueVideoTranscodeJob = deps.enqueueVideoTranscodeJob,
     listMessageFilesByMessageIds = deps.listMessageFilesByMessageIds,
+    ALLOWED_AVATAR_MIME_TYPES = deps.ALLOWED_AVATAR_MIME_TYPES,
+    AVATAR_FILE_LIMITS = deps.AVATAR_FILE_LIMITS,
   } = deps;
 
   function toSql(builder, p = []) {
@@ -148,11 +150,104 @@ export function registerRemoteUploadRoutes(app, deps) {
       messageId,
       encryptionType,
       encryption_type,
+      uploadType,
     } = req.body || {};
 
     const name = filename || originalName || "upload.bin";
     const mime = contentType || mimeType || "application/octet-stream";
     const size = Number(fileSize ?? sizeBytes ?? 0);
+
+    const isAvatarUpload = String(uploadType || "").toLowerCase() === "avatar";
+
+    if (isAvatarUpload) {
+      const avatarLimit =
+        AVATAR_FILE_LIMITS?.maxFileSizeBytes ||
+        deps.AVATAR_FILE_LIMITS?.maxFileSizeBytes ||
+        10 * 1024 * 1024;
+
+      if (!size || size <= 0 || size > avatarLimit) {
+        return res
+          .status(400)
+          .json({ error: "File size exceeds maximum allowed limit." });
+      }
+
+      const allowedMimes =
+        ALLOWED_AVATAR_MIME_TYPES ||
+        deps.ALLOWED_AVATAR_MIME_TYPES ||
+        new Set([
+          "image/jpeg",
+          "image/png",
+          "image/gif",
+          "image/webp",
+          "image/bmp",
+        ]);
+
+      if (!allowedMimes.has(String(mime || "").toLowerCase())) {
+        return res
+          .status(400)
+          .json({ error: "Avatar must be a JPEG, PNG, GIF, WEBP, or BMP image." });
+      }
+
+      if (
+        !storageProvider ||
+        (storageProvider.type !== "remote" && storageProvider.type !== "s3") ||
+        typeof storageProvider.getUploadUrl !== "function"
+      ) {
+        return res.json({
+          success: true,
+          type: "local",
+        });
+      }
+
+      const ext = path.extname(name).toLowerCase() || ".png";
+      const generatedName = `avatar-${Date.now()}-${crypto.randomBytes(6).toString("hex")}${ext}`;
+      const generatedKey = `avatars/${generatedName}`;
+
+      try {
+        const uploadResult = await storageProvider.getUploadUrl({
+          filename: generatedName,
+          contentType: mime,
+          fileSize: size,
+          key: generatedKey,
+        });
+
+        const finalStorageKey =
+          uploadResult.storageKey || uploadResult.key || generatedKey;
+        const providerType = storageProvider.type || uploadResult.type || "s3";
+
+        if (typeof recordPendingPresignedUpload === "function") {
+          try {
+            recordPendingPresignedUpload({
+              storageKey: finalStorageKey,
+              userId: session?.userId || null,
+            });
+          } catch (_) {}
+        } else if (typeof adminRun === "function") {
+          try {
+            callAdminRun(
+              dbKnex("pending_presigned_uploads").insert({
+                storage_key: finalStorageKey,
+                user_id: session?.userId || null,
+                created_at: new Date().toISOString(),
+              }),
+            );
+            if (typeof adminSave === "function") adminSave();
+          } catch (_) {}
+        }
+
+        return res.json({
+          success: true,
+          type: providerType,
+          uploadUrl: uploadResult.uploadUrl,
+          storageKey: finalStorageKey,
+          avatarUrl: `/api/uploads/avatars/${generatedName}`,
+        });
+      } catch (err) {
+        return res.status(500).json({
+          error: err.message || "Failed to generate presigned upload URL.",
+        });
+      }
+    }
 
     const maxLimit =
       deps.MESSAGE_FILE_LIMITS?.maxFileSizeBytes ||
