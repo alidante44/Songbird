@@ -19,9 +19,9 @@ describe("Prune Orphan Avatar Objects in S3", () => {
 
   describe("pruneOrphanRemoteObjects with avatars in pending_presigned_uploads", () => {
     test("keeps claimed avatars in users/chats and deletes orphan avatars", async () => {
-      const orphanAvatarKey = "avatars/avatar-orphan-123.png";
-      const claimedUserAvatarKey = "avatars/avatar-user-456.png";
-      const claimedGroupAvatarKey = "avatars/avatar-group-789.png";
+      const orphanAvatarKey = "uploads/avatars/avatar-orphan-123.png";
+      const claimedUserAvatarKey = "uploads/avatars/avatar-user-456.png";
+      const claimedGroupAvatarKey = "uploads/avatars/avatar-group-789.png";
 
       const pendingRows = [
         {
@@ -83,32 +83,35 @@ describe("Prune Orphan Avatar Objects in S3", () => {
   });
 
   describe("pruneOrphanAvatarObjects (S3 bucket sweeper)", () => {
-    test("sweeps avatars/ prefix in S3, deleting unreferenced files older than cutoff", async () => {
+    test("sweeps uploads/avatars/ prefix in S3, deleting unreferenced files older than cutoff", async () => {
       const twoHoursAgo = new Date(Date.now() - 2 * 3600 * 1000);
       const fiveMinsAgo = new Date(Date.now() - 5 * 60 * 1000);
 
-      mockRemoteProvider.listObjects.mockResolvedValue([
-        {
-          key: "avatars/active-user.png",
-          lastModified: twoHoursAgo,
-          size: 1000,
+      mockRemoteProvider.listObjects.mockImplementation(async (prefix) => {
+        if (String(prefix || "") === "avatars/") return [];
+        return [
+          {
+            key: "uploads/avatars/active-user.png",
+            lastModified: twoHoursAgo,
+            size: 1000,
+          },
+          {
+            key: "uploads/avatars/active-group.png",
+            lastModified: twoHoursAgo,
+            size: 2000,
+          },
+          {
+            key: "uploads/avatars/orphan-old.png",
+            lastModified: twoHoursAgo,
+            size: 3000,
         },
         {
-          key: "avatars/active-group.png",
-          lastModified: twoHoursAgo,
-          size: 2000,
-        },
-        {
-          key: "avatars/orphan-old.png",
-          lastModified: twoHoursAgo,
-          size: 3000,
-        },
-        {
-          key: "avatars/recent-in-flight.png",
+          key: "uploads/avatars/recent-in-flight.png",
           lastModified: fiveMinsAgo,
           size: 4000,
         },
-      ]);
+        ];
+        });
 
       const jobs = createMessageFileJobs({
         adminGetAll: (query) => {
@@ -143,8 +146,8 @@ describe("Prune Orphan Avatar Objects in S3", () => {
       });
 
       expect(result.prunedCount).toBe(1);
-      expect(result.prunedKeys).toEqual(["avatars/orphan-old.png"]);
-      expect(deletedKeys).toEqual(["avatars/orphan-old.png"]);
+      expect(result.prunedKeys).toEqual(["uploads/avatars/orphan-old.png"]);
+      expect(deletedKeys).toEqual(["uploads/avatars/orphan-old.png"]);
     });
   });
 });

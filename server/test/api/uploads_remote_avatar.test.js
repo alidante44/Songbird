@@ -70,7 +70,7 @@ describe("POST /api/uploads/presign with uploadType: 'avatar'", () => {
     expect(res.status).toBe(401);
   });
 
-  test("generates S3 presigned URL with avatars/ prefix when S3 configured", async () => {
+  test("generates S3 presigned URL with uploads/avatars/ prefix when S3 configured", async () => {
     appObj = createApp(mockRemoteProvider);
     const res = await request(appObj.app)
       .post("/api/uploads/presign")
@@ -86,10 +86,10 @@ describe("POST /api/uploads/presign with uploadType: 'avatar'", () => {
     expect(res.body.success).toBe(true);
     expect(res.body.type).toBe("s3");
     expect(res.body.uploadUrl).toContain(
-      "test-bucket.s3.amazonaws.com/avatars/avatar-",
+      "test-bucket.s3.amazonaws.com/uploads/avatars/avatar-",
     );
     expect(res.body.storageKey).toMatch(
-      /^avatars\/avatar-[a-zA-Z0-9_-]+\.png$/,
+      /^uploads\/avatars\/avatar-[a-zA-Z0-9_-]+\.png$/,
     );
     expect(res.body.avatarUrl).toMatch(
       /^\/api\/uploads\/avatars\/avatar-[a-zA-Z0-9_-]+\.png$/,

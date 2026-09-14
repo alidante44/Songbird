@@ -20,11 +20,11 @@ describe("server/lib/uploads.js avatar storage enhancements", () => {
 
     mockRemoteProvider = {
       type: "s3",
-      uploadBuffer: vi.fn().mockResolvedValue({ key: "avatars/test.png" }),
+      uploadBuffer: vi.fn().mockResolvedValue({ key: "uploads/avatars/test.png" }),
       deleteFile: vi.fn().mockResolvedValue(true),
       getDownloadUrl: vi
         .fn()
-        .mockResolvedValue("https://s3.example.com/avatars/test.png"),
+        .mockResolvedValue("https://s3.example.com/uploads/avatars/test.png"),
     };
 
     mockLocalProvider = {
@@ -81,10 +81,10 @@ describe("server/lib/uploads.js avatar storage enhancements", () => {
 
       expect(result.avatarUrl).toBe("/api/uploads/avatars/avatar-123.png");
       expect(result.storageDriver).toBe("s3");
-      expect(result.storageKey).toBe("avatars/avatar-123.png");
+      expect(result.storageKey).toBe("uploads/avatars/avatar-123.png");
 
       expect(mockRemoteProvider.uploadBuffer).toHaveBeenCalledWith(
-        "avatars/avatar-123.png",
+        "uploads/avatars/avatar-123.png",
         expect.any(Buffer),
         "image/png",
       );
@@ -220,7 +220,7 @@ describe("server/lib/uploads.js avatar storage enhancements", () => {
 
       expect(fs.existsSync(filePath)).toBe(false);
       expect(mockRemoteProvider.deleteFile).toHaveBeenCalledWith(
-        "avatars/avatar-del.png",
+        "uploads/avatars/avatar-del.png",
       );
     });
 
@@ -243,11 +243,11 @@ describe("server/lib/uploads.js avatar storage enhancements", () => {
       });
 
       uploadTools.removeAvatarByUrl(
-        "https://my-bucket.s3.amazonaws.com/avatars/avatar-full-url.png?query=1",
+        "https://my-bucket.s3.amazonaws.com/uploads/avatars/avatar-full-url.png?query=1",
       );
 
       expect(mockRemoteProvider.deleteFile).toHaveBeenCalledWith(
-        "avatars/avatar-full-url.png",
+        "uploads/avatars/avatar-full-url.png",
       );
     });
   });

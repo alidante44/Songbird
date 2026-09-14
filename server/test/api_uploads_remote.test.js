@@ -174,7 +174,7 @@ describe("Remote Uploads & File Management Routes", () => {
 
       expect(res.status).toBe(200);
       expect(res.body.type).toBe("remote");
-      expect(res.body.storageKey).toMatch(/^uploads\//);
+      expect(res.body.storageKey).toMatch(/^uploads\/messages\//);
       expect(res.body.uploadUrl).toBeTruthy();
       expect(res.body.fileId).toBeNull();
       expect(createMessageFilesMock).not.toHaveBeenCalled();

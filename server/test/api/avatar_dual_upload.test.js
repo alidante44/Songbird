@@ -17,11 +17,11 @@ describe("Dual Avatar Upload (Presigned & Multipart S3)", () => {
   beforeEach(() => {
     mockRemoteProvider = {
       type: "s3",
-      uploadBuffer: vi.fn().mockResolvedValue({ key: "avatars/uploaded.png" }),
+      uploadBuffer: vi.fn().mockResolvedValue({ key: "uploads/avatars/uploaded.png" }),
       deleteFile: vi.fn().mockResolvedValue(true),
       getDownloadUrl: vi
         .fn()
-        .mockResolvedValue("https://s3.example.com/avatars/uploaded.png"),
+        .mockResolvedValue("https://s3.example.com/uploads/avatars/uploaded.png"),
     };
 
     updateUserProfileMock = vi.fn();
@@ -30,7 +30,7 @@ describe("Dual Avatar Upload (Presigned & Multipart S3)", () => {
     storeAvatarFileMock = vi.fn().mockResolvedValue({
       avatarUrl: "/api/uploads/avatars/avatar-stored-123.png",
       storageDriver: "s3",
-      storageKey: "avatars/avatar-stored-123.png",
+      storageKey: "uploads/avatars/avatar-stored-123.png",
     });
   });
 
