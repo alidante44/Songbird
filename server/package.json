@@ -46,7 +46,8 @@
     "db:user:inspect": "/bin/bash -p ../scripts/run-data-command.sh node scripts/inspect-db.js user",
     "db:file:inspect": "/bin/bash -p ../scripts/run-data-command.sh node scripts/inspect-db.js file",
     "remote:configure": "node scripts/configure-remote-channel.js",
-    "storage:cors": "node scripts/configure-bucket-cors.js"
+    "storage:cors": "node scripts/configure-bucket-cors.js",
+    "storage:migrate": "/bin/bash -p ../scripts/run-data-command.sh node scripts/migrate-storage-layout.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1127.0",
