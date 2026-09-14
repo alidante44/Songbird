@@ -235,20 +235,48 @@ export function createUploadTools({
   const removeAvatarByUrl = (avatarUrl = "") => {
     try {
       const raw = String(avatarUrl || "").trim();
+      if (!raw) return;
 
-      if (
-        !raw.startsWith("/api/uploads/avatars/") &&
-        !raw.startsWith("/uploads/avatars/")
-      )
-        return;
+      let cleanPath = raw;
+      try {
+        if (raw.startsWith("http://") || raw.startsWith("https://")) {
+          const parsed = new URL(raw);
+          cleanPath = parsed.pathname;
+        } else {
+          cleanPath = raw.split("?")[0].split("#")[0];
+        }
+      } catch (_) {
+        cleanPath = raw.split("?")[0].split("#")[0];
+      }
 
-      const fileName = path.basename(raw);
+      const fileName = path.basename(cleanPath);
       if (!fileName) return;
+
+      const isAvatarPath =
+        cleanPath.startsWith("/api/uploads/avatars/") ||
+        cleanPath.startsWith("/uploads/avatars/") ||
+        cleanPath.includes("/avatars/") ||
+        fileName.startsWith("avatar-");
+
+      if (!isAvatarPath) return;
 
       const filePath = path.join(avatarUploadRootDir, fileName);
 
       if (fs.existsSync(filePath)) {
         fs.unlinkSync(filePath);
+      }
+
+      if (
+        storageProvider &&
+        (storageProvider.type === "remote" || storageProvider.type === "s3") &&
+        typeof storageProvider.deleteFile === "function"
+      ) {
+        storageProvider.deleteFile(`avatars/${fileName}`).catch((err) => {
+          console.warn(
+            `[uploads] Failed to delete avatar "avatars/${fileName}" from storage:`,
+            err?.message || err,
+          );
+        });
       }
     } catch (_) {
       // best effort cleanup
@@ -292,11 +320,53 @@ export function createUploadTools({
 
     if (fs.existsSync(diskPath)) return normalized || null;
 
+    if (
+      storageProvider &&
+      (storageProvider.type === "remote" || storageProvider.type === "s3")
+    ) {
+      return normalized || null;
+    }
+
     if (userId) {
       adminRun(dbKnex("users").where("id", userId).update({ avatar_url: null }));
       adminSave();
     }
     return null;
+  };
+
+  const storeAvatarFile = async (file) => {
+    if (!file) {
+      throw new Error("Avatar file is required.");
+    }
+    const avatarUrl = `/api/uploads/avatars/${file.filename}`;
+
+    if (
+      storageProvider &&
+      (storageProvider.type === "remote" || storageProvider.type === "s3") &&
+      typeof storageProvider.uploadBuffer === "function"
+    ) {
+      const fileKey = `avatars/${file.filename}`;
+      const fileBuf = await fs.promises.readFile(file.path);
+      const uploadBuf = storageEncryption.decryptBuffer(fileBuf);
+      await storageProvider.uploadBuffer(
+        fileKey,
+        uploadBuf,
+        file.mimetype || "image/jpeg",
+      );
+      await fs.promises.unlink(file.path).catch(() => {});
+      return {
+        avatarUrl,
+        storageDriver: storageProvider.type || "s3",
+        storageKey: fileKey,
+      };
+    }
+
+    storageEncryption.encryptFileInPlace(file.path);
+    return {
+      avatarUrl,
+      storageDriver: "local",
+      storageKey: null,
+    };
   };
 
   const isDangerousUploadFile = (originalName, mimeType) => {
@@ -483,6 +553,7 @@ export function createUploadTools({
     resolveAvatarDiskPath,
     normalizeAvatarPublicUrl,
     ensureAvatarExists,
+    storeAvatarFile,
     isDangerousUploadFile,
     registerUploadRoutes,
     storageEncryption,
