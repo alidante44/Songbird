@@ -9,7 +9,7 @@ const CHAT_ID_100 = "10000000-0000-4000-8000-000000000100";
 describe("deletionService", () => {
   const createMockDb = () => {
     return {
-      findChatById: vi.fn((id) => ({ id, name: "General Chat" })),
+      findChatById: vi.fn((id) => ({ id, name: "General Chat", group_avatar_url: "/api/uploads/avatars/group.png" })),
       findUserById: vi.fn((id) => ({ id, username: "alice" })),
       listChatMembers: vi.fn((chatId) => [
         { id: ALICE_ID, username: "alice" },
@@ -35,6 +35,7 @@ describe("deletionService", () => {
     expect(res.success).toBe(true);
     expect(db.deleteChatById).toHaveBeenCalledWith(CHAT_ID);
     expect(res.storedFilesToRemove).toEqual(["file1.png", "file2.pdf"]);
+    expect(res.avatarFileToRemove).toBe("/api/uploads/avatars/group.png");
     expect(res.sseEvents.length).toBe(2);
     expect(res.sseEvents[0].payload.type).toBe("chat_deleted");
   });

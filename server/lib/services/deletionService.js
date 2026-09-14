@@ -41,6 +41,7 @@ export function createDeletionService(dbApi) {
       chatId,
       chat,
       storedFilesToRemove: storedNames,
+      avatarFileToRemove: chat?.group_avatar_url || null,
       sseEvents,
     };
   }
