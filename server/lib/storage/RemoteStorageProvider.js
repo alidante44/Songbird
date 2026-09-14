@@ -14,6 +14,7 @@ import {
   DeleteObjectCommand,
   HeadObjectCommand,
   ListObjectsV2Command,
+  CopyObjectCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { StorageProvider } from "./StorageProvider.js";
@@ -385,5 +386,46 @@ export class RemoteStorageProvider extends StorageProvider {
     }
 
     return items;
+  }
+
+  /**
+   * Server-side copy of one object to a new key (same bucket).
+   * Falls back to download + re-upload for providers where
+   * CopyObject is restricted.
+   * @param {string} srcKey
+   * @param {string} destKey
+   * @returns {Promise<{key: string}>}
+   */
+  async copyFile(srcKey, destKey) {
+    const cleanSrc = String(srcKey || "").replace(/^\//, "");
+    const cleanDest = String(destKey || "").replace(/^\//, "");
+    if (!cleanSrc || !cleanDest) {
+      throw new Error("copyFile requires srcKey and destKey.");
+    }
+    try {
+      await this.client.send(
+        new CopyObjectCommand({
+          Bucket: this.bucket,
+          CopySource: `${this.bucket}/${cleanSrc}`,
+          Key: cleanDest,
+        }),
+      );
+      return { key: cleanDest };
+    } catch (err) {
+      // Fallback: download bytes and re-upload (covers providers
+      // with restricted CopyObject support).
+      const getCommand = new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: cleanSrc,
+      });
+      const response = await this.client.send(getCommand);
+      const chunks = [];
+      for await (const chunk of response.Body) {
+        chunks.push(chunk);
+      }
+      const buf = Buffer.concat(chunks);
+      await this.uploadBuffer(cleanDest, buf, response.ContentType || "application/octet-stream");
+      return { key: cleanDest };
+    }
   }
 }

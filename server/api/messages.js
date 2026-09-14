@@ -1313,7 +1313,7 @@ function registerMessageRoutes(app, deps) {
                 return;
               }
 
-              const fileKey = `uploads/${file.filename}`;
+              const fileKey = `uploads/messages/${file.filename}`;
               const fileBuf = await fs.promises.readFile(file.path);
               const uploadBuf = storageEncryption.decryptBuffer(fileBuf);
               await deps.storageProvider.uploadBuffer(

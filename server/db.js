@@ -2809,6 +2809,55 @@ export function listPendingPresignedUploads(cutoffIso = null) {
   return getAll(query);
 }
 
+/**
+ * Rewrite exact storage-key references after the legacy object-storage
+ * layout migration (avatars/* + uploads/* → uploads/avatars/* +
+ * uploads/messages/*). All SQL lives here per repo convention.
+ * @param {Array<{from:string,to:string}>|Array<[string,string]>} pairs
+ * @returns {number|Promise<number>} total rows updated
+ */
+export function rewriteStorageKeys(pairs = []) {
+  const normalized = (Array.isArray(pairs) ? pairs : [])
+    .map((entry) => {
+      if (Array.isArray(entry)) {
+        return { from: String(entry[0] || "").trim(), to: String(entry[1] || "").trim() };
+      }
+      return {
+        from: String(entry?.from || entry?.oldKey || entry?.storageKey || "").trim(),
+        to: String(entry?.to || entry?.newKey || entry?.key || "").trim(),
+      };
+    })
+    .filter((p) => p.from && p.to && p.from !== p.to);
+  if (!normalized.length) return 0;
+
+  const results = [];
+  for (const { from, to } of normalized) {
+    results.push(
+      run(
+        dbKnex("chat_message_files").where("storage_key", from).update({ storage_key: to }),
+      ),
+    );
+    results.push(
+      run(
+        dbKnex("chat_message_files").where("thumb_storage_key", from).update({ thumb_storage_key: to }),
+      ),
+    );
+    results.push(
+      run(
+        dbKnex("pending_presigned_uploads").where("storage_key", from).update({ storage_key: to }),
+      ),
+    );
+  }
+
+  const hasPromise = results.some((r) => r && typeof r.then === "function");
+  if (!hasPromise) {
+    return results.reduce((sum, n) => sum + (Number(n) || 0), 0);
+  }
+  return Promise.all(results).then((counts) =>
+    counts.reduce((sum, n) => sum + (Number(n) || 0), 0),
+  );
+}
+
 function normalizeDbTimestamp(value) {
   const str = String(value || "").trim();
   if (!str) return "";

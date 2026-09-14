@@ -341,7 +341,10 @@ export function createMessageFileJobs({
     );
 
     const avatarKeysToCheck = keysToCheck.filter(
-      (k) => k.startsWith("avatars/") || k.includes("avatar-"),
+      (k) =>
+        k.startsWith("uploads/avatars/") ||
+        k.startsWith("avatars/") ||
+        k.includes("avatar-"),
     );
     if (avatarKeysToCheck.length) {
       const rawUsers = adminGetAll(
@@ -453,7 +456,23 @@ export function createMessageFileJobs({
       return { prunedCount: 0, prunedKeys: [] };
     }
 
-    const s3Objects = await activeStorageProvider.listObjects("avatars/");
+    const s3ObjectsNew =
+      (await activeStorageProvider.listObjects("uploads/avatars/")) || [];
+    // Legacy prefix from before uploads/avatars unification — still swept
+    // so old orphan avatars don't linger forever.
+    let s3ObjectsLegacy = [];
+    try {
+      s3ObjectsLegacy =
+        (await activeStorageProvider.listObjects("avatars/")) || [];
+    } catch (_) {
+      s3ObjectsLegacy = [];
+    }
+    const seenKeys = new Set();
+    const s3Objects = [...s3ObjectsNew, ...s3ObjectsLegacy].filter((obj) => {
+      if (!obj?.key || seenKeys.has(obj.key)) return false;
+      seenKeys.add(obj.key);
+      return true;
+    });
     if (!s3Objects || !s3Objects.length) {
       return { prunedCount: 0, prunedKeys: [] };
     }

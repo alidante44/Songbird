@@ -201,7 +201,7 @@ export function registerRemoteUploadRoutes(app, deps) {
 
       const ext = path.extname(name).toLowerCase() || ".png";
       const generatedName = `avatar-${Date.now()}-${crypto.randomBytes(6).toString("hex")}${ext}`;
-      const generatedKey = `avatars/${generatedName}`;
+      const generatedKey = `uploads/avatars/${generatedName}`;
 
       try {
         const uploadResult = await storageProvider.getUploadUrl({
@@ -261,7 +261,7 @@ export function registerRemoteUploadRoutes(app, deps) {
     }
 
     const ext = path.extname(name).toLowerCase();
-    const generatedKey = `uploads/${Date.now()}_${crypto.randomBytes(8).toString("hex")}${ext}`;
+    const generatedKey = `uploads/messages/${Date.now()}_${crypto.randomBytes(8).toString("hex")}${ext}`;
 
     if (
       !storageProvider ||
@@ -794,7 +794,7 @@ export function registerRemoteUploadRoutes(app, deps) {
     );
 
     const ext = path.extname(filename).toLowerCase();
-    const generatedKey = `uploads/${Date.now()}_${crypto.randomBytes(8).toString("hex")}${ext}`;
+    const generatedKey = `uploads/messages/${Date.now()}_${crypto.randomBytes(8).toString("hex")}${ext}`;
 
     let kind = "document";
     if (mimeType.startsWith("image/")) kind = "image";

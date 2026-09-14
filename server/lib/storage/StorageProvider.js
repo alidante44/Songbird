@@ -65,4 +65,16 @@ export class StorageProvider {
   async listObjects(prefix = "") {
     throw new Error("listObjects not implemented");
   }
+
+  /**
+   * Server-side copy of one stored object to a new key.
+   * Used by the legacy storage-layout migration
+   * (avatars/* + uploads/* → uploads/avatars/* + uploads/messages/*).
+   * @param {string} srcKey
+   * @param {string} destKey
+   * @returns {Promise<{key: string}>}
+   */
+  async copyFile(srcKey, destKey) {
+    throw new Error("copyFile not implemented");
+  }
 }

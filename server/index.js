@@ -27,6 +27,7 @@ import { createSessionHelpers } from "./lib/sessions.js";
 import { createRedisClient, createRedisSessionStore } from "./lib/redis.js";
 import { storageEncryption } from "./lib/storageEncryption.js";
 import { createStorageProvider } from "./lib/storage/index.js";
+import { migrateLegacyStorageLayout } from "./lib/storageLayoutMigration.js";
 import { createMediaQueueManager } from "./lib/mediaQueue.js";
 import { createRemoteChannelManager } from "./lib/remoteChannels.js";
 import { initAutoAddWorker } from "./lib/workers/autoAddWorker.js";
@@ -80,6 +81,7 @@ import {
   recordPendingPresignedUpload,
   removePendingPresignedUploads,
   listPendingPresignedUploads,
+  rewriteStorageKeys,
   listMessageFilesByMessageIds,
   markGroupMemberRemoved,
   markChatMemberLeft,
@@ -419,6 +421,45 @@ if (
         );
       });
   }
+}
+
+// Migrate legacy object-storage layout (avatars/* + uploads/* at bucket
+// root) to the unified layout (uploads/avatars/* + uploads/messages/*),
+// mirroring local disk. Runs in the background like bucket CORS setup:
+// never blocks or crashes boot. Read paths already handle both layouts,
+// so in-flight requests keep working while the migration copies objects,
+// rewrites DB storage_key columns, and deletes verified legacy objects.
+// Manual run: npm run storage:migrate (refuses while the server is up).
+if (
+  storageProvider?.type === "remote" ||
+  storageProvider?.type === "s3"
+) {
+  migrateLegacyStorageLayout({
+    storageProvider,
+    rewriteStorageKeys,
+    adminSave,
+  })
+    .then((summary) => {
+      if (summary?.skipped) return;
+      if (!summary?.hasLegacy) {
+        console.log(
+          "[server] Object-storage layout already unified (uploads/avatars/* + uploads/messages/*).",
+        );
+        return;
+      }
+      console.log(
+        `[server] Object-storage layout migrated: ${summary.moved.length} object(s) moved, ` +
+          `${summary.dbUpdated} DB row(s) updated, ${summary.deletedLegacy.length} legacy object(s) deleted.` +
+          (summary.failed.length || summary.deleteFailed.length
+            ? ` (${summary.failed.length} copy / ${summary.deleteFailed.length} delete failures — see warnings above)`
+            : ""),
+      );
+    })
+    .catch((err) => {
+      console.warn(
+        `[server] Object-storage layout migration failed (legacy keys keep working via fallback): ${err?.message || err}`,
+      );
+    });
 }
 
 const uploadTools = createUploadTools({

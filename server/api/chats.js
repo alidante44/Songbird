@@ -1519,7 +1519,11 @@ function registerChatRoutes(app, deps) {
       );
       const fileName = path.basename(avatarUrl);
       if (fileName && typeof removePendingPresignedUploads === "function") {
-        removePendingPresignedUploads([`avatars/${fileName}`]);
+        removePendingPresignedUploads([
+          `uploads/avatars/${fileName}`,
+          // Legacy key from before uploads/avatars unification.
+          `avatars/${fileName}`,
+        ]);
       }
       emitChatListChangedToChatParticipants(chatId);
 
