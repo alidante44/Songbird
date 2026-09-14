@@ -56,4 +56,13 @@ export class StorageProvider {
   async uploadFile(fileKey, filePath, contentType) {
     throw new Error("uploadFile not implemented");
   }
+
+  /**
+   * List object keys matching a prefix.
+   * @param {string} [prefix]
+   * @returns {Promise<Array<{ key: string, lastModified?: Date, size?: number }>>}
+   */
+  async listObjects(prefix = "") {
+    throw new Error("listObjects not implemented");
+  }
 }
