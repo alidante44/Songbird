@@ -112,6 +112,7 @@ import {
   updateProfile,
   updateStatus as updateStatusRequest,
   uploadAvatar,
+  uploadAvatarFile,
   prepareFilesForMessage,
 } from "../api/chatApi.js";
 import { useMessageMaxChars } from "../settings/appConfig.js";
@@ -5469,15 +5470,28 @@ export default function ChatPage({ user, setUser, isDark, setIsDark, toggleTheme
         if (!CHAT_PAGE_CONFIG.fileUploadEnabled) {
           throw new Error("File uploads are disabled on this server.");
         }
-        const payload = new FormData();
-        payload.append("avatar", pendingAvatarFile.file);
-        payload.append("currentUsername", user.username);
-        const uploadRes = await uploadAvatar(payload);
-        const uploadData = await uploadRes.json();
-        if (!uploadRes.ok) {
-          throw new Error(uploadData?.error || "Unable to upload profile photo.");
+        const s3Upload = await uploadAvatarFile(pendingAvatarFile.file);
+        if (s3Upload.directS3 && s3Upload.avatarUrl) {
+          const uploadRes = await uploadAvatar({
+            currentUsername: user.username,
+            avatarUrl: s3Upload.avatarUrl,
+          });
+          const uploadData = await uploadRes.json();
+          if (!uploadRes.ok) {
+            throw new Error(uploadData?.error || "Unable to upload profile photo.");
+          }
+          avatarUrlToSave = uploadData.avatarUrl || s3Upload.avatarUrl;
+        } else {
+          const payload = new FormData();
+          payload.append("avatar", pendingAvatarFile.file);
+          payload.append("currentUsername", user.username);
+          const uploadRes = await uploadAvatar(payload);
+          const uploadData = await uploadRes.json();
+          if (!uploadRes.ok) {
+            throw new Error(uploadData?.error || "Unable to upload profile photo.");
+          }
+          avatarUrlToSave = uploadData.avatarUrl || "";
         }
-        avatarUrlToSave = uploadData.avatarUrl || "";
       }
       const res = await updateProfile({
         currentUsername: user.username,
@@ -6144,10 +6158,19 @@ export default function ChatPage({ user, setUser, isDark, setIsDark, toggleTheme
         throw new Error("Server did not return a group id.");
       }
       if (pendingGroupAvatarFile?.file) {
-        const form = new FormData();
-        form.append("username", user.username);
-        form.append("avatar", pendingGroupAvatarFile.file);
-        const avatarRes = await uploadGroupAvatar(nextChatId, form);
+        const s3Upload = await uploadAvatarFile(pendingGroupAvatarFile.file);
+        let avatarRes;
+        if (s3Upload.directS3 && s3Upload.avatarUrl) {
+          avatarRes = await uploadGroupAvatar(nextChatId, {
+            username: user.username,
+            avatarUrl: s3Upload.avatarUrl,
+          });
+        } else {
+          const form = new FormData();
+          form.append("username", user.username);
+          form.append("avatar", pendingGroupAvatarFile.file);
+          avatarRes = await uploadGroupAvatar(nextChatId, form);
+        }
         const avatarData = await avatarRes.json();
         if (!avatarRes.ok) {
           throw new Error(

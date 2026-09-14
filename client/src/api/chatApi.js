@@ -96,11 +96,14 @@ export const getProfileByUsername = (username) =>
     `${API_BASE}/api/profile?username=${encodeURIComponent(String(username || "").trim())}`,
   );
 
-export const uploadAvatar = (payload) =>
-  apiFetch(`${API_BASE}/api/profile/avatar`, {
+export const uploadAvatar = (payload) => {
+  const isFormData = typeof FormData !== "undefined" && payload instanceof FormData;
+  return apiFetch(`${API_BASE}/api/profile/avatar`, {
     method: "POST",
-    body: payload,
+    headers: isFormData ? undefined : { "Content-Type": "application/json" },
+    body: isFormData ? payload : JSON.stringify(payload),
   });
+};
 
 export const updateStatus = (payload) =>
   apiFetch(`${API_BASE}/api/status`, {
@@ -232,11 +235,14 @@ export const getChatPreview = ({ chatId, username, allowMissing = false }) =>
     )}${allowMissing ? "&allowMissing=1" : ""}`,
   );
 
-export const uploadGroupAvatar = (chatId, payload) =>
-  apiFetch(`${API_BASE}/api/chats/group/${encodeURIComponent(chatId)}/avatar`, {
+export const uploadGroupAvatar = (chatId, payload) => {
+  const isFormData = typeof FormData !== "undefined" && payload instanceof FormData;
+  return apiFetch(`${API_BASE}/api/chats/group/${encodeURIComponent(chatId)}/avatar`, {
     method: "POST",
-    body: payload,
+    headers: isFormData ? undefined : { "Content-Type": "application/json" },
+    body: isFormData ? payload : JSON.stringify(payload),
   });
+};
 
 export const removeGroupAvatar = (chatId, payload) =>
   apiFetch(`${API_BASE}/api/chats/group/${encodeURIComponent(chatId)}/avatar`, {
@@ -521,6 +527,72 @@ export async function uploadFileToPresignedUrl(uploadUrlOrOptions, file, options
   }
 
   return { ok: true, status: uploadRes.status };
+}
+
+export async function presignAvatarUpload(file, options = {}) {
+  const fileObj = file?.file instanceof Blob ? file.file : file;
+  const filename =
+    options.filename ||
+    options.originalName ||
+    file?.name ||
+    fileObj?.name ||
+    "avatar.png";
+  const contentType =
+    options.contentType ||
+    options.mimeType ||
+    file?.type ||
+    fileObj?.type ||
+    "image/png";
+  const fileSize = Number(
+    options.fileSize ?? options.sizeBytes ?? file?.size ?? fileObj?.size ?? 0,
+  );
+
+  const payload = {
+    uploadType: "avatar",
+    filename,
+    contentType,
+    fileSize,
+  };
+
+  const res = await apiFetch(`${API_BASE}/api/uploads/presign`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    const errJson = await res.json().catch(() => ({}));
+    throw new Error(errJson?.error || "Failed to presign avatar upload.");
+  }
+
+  return await res.json();
+}
+
+export async function uploadAvatarFile(file, options = {}) {
+  const fileObj = file?.file instanceof Blob ? file.file : file;
+  try {
+    const presignRes = await presignAvatarUpload(fileObj, options);
+    if (
+      presignRes &&
+      (presignRes.type === "s3" || presignRes.type === "remote") &&
+      presignRes.uploadUrl &&
+      presignRes.avatarUrl
+    ) {
+      await uploadFileToPresignedUrl(presignRes.uploadUrl, fileObj, {
+        contentType: options.contentType || fileObj?.type || "image/png",
+        onProgress: options.onProgress,
+      });
+      return {
+        directS3: true,
+        avatarUrl: presignRes.avatarUrl,
+        storageKey: presignRes.storageKey,
+      };
+    }
+  } catch (err) {
+    // If presigning fails or returns non-s3, fall back gracefully
+  }
+
+  return { directS3: false };
 }
 
 export async function prepareFilesForMessage(files = [], options = {}) {

@@ -5,7 +5,7 @@ import { hasPersian } from "../../utils/fontUtils.js";
 import { getAvatarInitials } from "../../utils/avatarInitials.js";
 import { getRandomAvatarColor } from "../../utils/avatarColor.js";
 import { USERNAME_INPUT_PATTERN, useNameLimits } from "../../utils/nameLimits.js";
-import { apiFetch } from "../../api/chatApi.js";
+import { apiFetch, uploadAvatarFile } from "../../api/chatApi.js";
 import { CHAT_PAGE_CONFIG } from "../../settings/chatPageConfig.js";
 import { api, inputCls } from "./adminShared.js";
 import Avatar from "../common/Avatar.jsx";
@@ -15,9 +15,18 @@ import Tooltip from "../common/Tooltip.jsx";
 // ─── Avatar upload helpers ────────────────────────────────────────────────────
 
 async function uploadUserAvatar(userId, file) {
-  const fd = new FormData();
-  fd.append("avatar", file);
-  await apiFetch(`/api/admin/users/${userId}/avatar`, { method: "POST", body: fd });
+  const s3Upload = await uploadAvatarFile(file);
+  if (s3Upload.directS3 && s3Upload.avatarUrl) {
+    await apiFetch(`/api/admin/users/${userId}/avatar`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ avatarUrl: s3Upload.avatarUrl }),
+    });
+  } else {
+    const fd = new FormData();
+    fd.append("avatar", file);
+    await apiFetch(`/api/admin/users/${userId}/avatar`, { method: "POST", body: fd });
+  }
 }
 
 async function deleteUserAvatar(userId) {
