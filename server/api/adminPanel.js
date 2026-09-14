@@ -8,6 +8,7 @@ import { userEvents } from "../lib/workers/autoAddWorker.js";
 import { dbKnex } from "../db/knex.js";
 import os from "node:os";
 import crypto from "node:crypto";
+import path from "node:path";
 import multer from "multer";
 import { execFile } from "node:child_process";
 
@@ -115,11 +116,15 @@ function registerAdminPanelRoutes(app, deps) {
     broadcastAll,
     // avatar upload
     uploadAvatar,
+    storeAvatarFile = deps.storeAvatarFile,
     avatarUploadRootDir,
     ALLOWED_AVATAR_MIME_TYPES,
     storageEncryption,
     removeUploadedFiles,
     removeAvatarByUrl,
+    removePendingPresignedUploads = deps.removePendingPresignedUploads,
+    pruneOrphanRemoteObjects = deps.pruneOrphanRemoteObjects,
+    pruneOrphanAvatarObjects = deps.pruneOrphanAvatarObjects,
     // maintenance
     vacuumDatabase,
     reloadDatabase,
@@ -635,29 +640,62 @@ function registerAdminPanelRoutes(app, deps) {
     }
     const userId = req.params.id;
     const file = req.file;
-    if (!file) return res.status(400).json({ error: "Avatar file is required." });
-    const mime = String(file.mimetype || "").toLowerCase();
-    if (!ALLOWED_AVATAR_MIME_TYPES.has(mime)) {
-      removeUploadedFiles([file], avatarUploadRootDir);
-      return res.status(400).json({ error: "Avatar must be a JPEG, PNG, GIF, WEBP, or BMP image." });
+    if (!file && !req.body?.avatarUrl) {
+      return res.status(400).json({ error: "Avatar file is required." });
     }
+
     const user = await resolveMaybePromise(findUserById(userId));
     if (!user) {
-      removeUploadedFiles([file], avatarUploadRootDir);
+      removeUploadedFiles(file ? [file] : [], avatarUploadRootDir);
       return res.status(404).json({ error: "User not found." });
     }
-    const avatarUrl = `/api/uploads/avatars/${file.filename}`;
-    try {
-      storageEncryption.encryptFileInPlace(file.path);
-    } catch {
-      removeUploadedFiles([file], avatarUploadRootDir);
-      return res.status(500).json({ error: "Unable to store avatar securely." });
+
+    const directAvatarUrl = String(req.body?.avatarUrl || "").trim();
+    let avatarUrl = "";
+
+    if (directAvatarUrl) {
+      const fileName = path.basename(directAvatarUrl);
+      if (
+        (!directAvatarUrl.startsWith("/api/uploads/avatars/") &&
+          !directAvatarUrl.startsWith("/uploads/avatars/")) ||
+        !fileName.startsWith("avatar-") ||
+        fileName.includes("..")
+      ) {
+        return res.status(400).json({ error: "Invalid avatar URL." });
+      }
+      avatarUrl = directAvatarUrl.startsWith("/uploads/")
+        ? `/api${directAvatarUrl}`
+        : directAvatarUrl;
+    } else {
+      const mime = String(file.mimetype || "").toLowerCase();
+      if (!ALLOWED_AVATAR_MIME_TYPES.has(mime)) {
+        removeUploadedFiles([file], avatarUploadRootDir);
+        return res.status(400).json({ error: "Avatar must be a JPEG, PNG, GIF, WEBP, or BMP image." });
+      }
+
+      try {
+        if (typeof storeAvatarFile === "function") {
+          const stored = await storeAvatarFile(file);
+          avatarUrl = stored.avatarUrl;
+        } else {
+          avatarUrl = `/api/uploads/avatars/${file.filename}`;
+          storageEncryption?.encryptFileInPlace?.(file.path);
+        }
+      } catch {
+        removeUploadedFiles([file], avatarUploadRootDir);
+        return res.status(500).json({ error: "Unable to store avatar securely." });
+      }
     }
     if (String(user.avatar_url || "").trim() && user.avatar_url !== avatarUrl) {
       removeAvatarByUrl(user.avatar_url);
     }
     await resolveMaybePromise(callAdminRun(dbKnex("users").where("id", userId).update({ avatar_url: avatarUrl })));
     adminSave();
+    const fileName = path.basename(avatarUrl);
+    if (fileName && typeof removePendingPresignedUploads === "function") {
+      removePendingPresignedUploads([`avatars/${fileName}`]);
+    }
+    log(session, "user.edit", { targetType: "user", targetLabel: user.username, detail: "avatar" });
     res.json({ ok: true, avatarUrl });
   });
 
@@ -693,6 +731,7 @@ function registerAdminPanelRoutes(app, deps) {
       ? await rawDeletion
       : rawDeletion || {};
     if (Array.isArray(storedNames) && storedNames.length > 0) removeStoredFileNames(storedNames);
+    if (user?.avatar_url) removeAvatarByUrl(user.avatar_url);
     log(session, "user.delete", { targetType: "user", targetLabel: `@${user.username}` });
     res.json({ ok: true });
   });
@@ -892,26 +931,49 @@ function registerAdminPanelRoutes(app, deps) {
     }
     const chatId = req.params.id;
     const file = req.file;
-    if (!file) return res.status(400).json({ error: "Avatar file is required." });
-
-    const mime = String(file.mimetype || "").toLowerCase();
-    if (!ALLOWED_AVATAR_MIME_TYPES.has(mime)) {
-      removeUploadedFiles([file], avatarUploadRootDir);
-      return res.status(400).json({ error: "Avatar must be a JPEG, PNG, GIF, WEBP, or BMP image." });
-    }
+    if (!file && !req.body?.avatarUrl) return res.status(400).json({ error: "Avatar file is required." });
 
     const chat = await resolveMaybePromise(findChatById(chatId));
     if (!chat || (chat.type !== "group" && chat.type !== "channel")) {
-      removeUploadedFiles([file], avatarUploadRootDir);
+      removeUploadedFiles(file ? [file] : [], avatarUploadRootDir);
       return res.status(404).json({ error: "Chat not found." });
     }
 
-    const avatarUrl = `/api/uploads/avatars/${file.filename}`;
-    try {
-      storageEncryption.encryptFileInPlace(file.path);
-    } catch {
-      removeUploadedFiles([file], avatarUploadRootDir);
-      return res.status(500).json({ error: "Unable to store avatar securely." });
+    const directAvatarUrl = String(req.body?.avatarUrl || "").trim();
+    let avatarUrl = "";
+
+    if (directAvatarUrl) {
+      const fileName = path.basename(directAvatarUrl);
+      if (
+        (!directAvatarUrl.startsWith("/api/uploads/avatars/") &&
+          !directAvatarUrl.startsWith("/uploads/avatars/")) ||
+        !fileName.startsWith("avatar-") ||
+        fileName.includes("..")
+      ) {
+        return res.status(400).json({ error: "Invalid avatar URL." });
+      }
+      avatarUrl = directAvatarUrl.startsWith("/uploads/")
+        ? `/api${directAvatarUrl}`
+        : directAvatarUrl;
+    } else {
+      const mime = String(file.mimetype || "").toLowerCase();
+      if (!ALLOWED_AVATAR_MIME_TYPES.has(mime)) {
+        removeUploadedFiles([file], avatarUploadRootDir);
+        return res.status(400).json({ error: "Avatar must be a JPEG, PNG, GIF, WEBP, or BMP image." });
+      }
+
+      try {
+        if (typeof storeAvatarFile === "function") {
+          const stored = await storeAvatarFile(file);
+          avatarUrl = stored.avatarUrl;
+        } else {
+          avatarUrl = `/api/uploads/avatars/${file.filename}`;
+          storageEncryption?.encryptFileInPlace?.(file.path);
+        }
+      } catch {
+        removeUploadedFiles([file], avatarUploadRootDir);
+        return res.status(500).json({ error: "Unable to store avatar securely." });
+      }
     }
 
     if (String(chat.group_avatar_url || "").trim() && chat.group_avatar_url !== avatarUrl) {
@@ -927,6 +989,10 @@ function registerAdminPanelRoutes(app, deps) {
       groupAvatarUrl: avatarUrl,
     }));
     adminSave();
+    const fileName = path.basename(avatarUrl);
+    if (fileName && typeof removePendingPresignedUploads === "function") {
+      removePendingPresignedUploads([`avatars/${fileName}`]);
+    }
     emitChatEvent(chatId, { type: "chat_updated", chatId });
     log(session, "chat.edit", { targetType: "chat", targetLabel: chat.name || `Chat #${chatId}`, details: "avatar updated" });
     res.json({ ok: true, avatarUrl });
@@ -1065,6 +1131,7 @@ function registerAdminPanelRoutes(app, deps) {
     const deletion = await resolveMaybePromise(adminDeleteChat(chatId));
     const { storedNames } = deletion || {};
     if (Array.isArray(storedNames) && storedNames.length > 0) removeStoredFileNames(storedNames);
+    if (chat?.group_avatar_url) removeAvatarByUrl(chat.group_avatar_url);
     log(session, "chat.delete", { targetType: "chat", targetLabel: chat?.name || `Chat #${chatId}` });
     res.json({ ok: true });
   });
@@ -1139,6 +1206,12 @@ function registerAdminPanelRoutes(app, deps) {
     try {
       if (dbConfig?.client === "postgres") await postgresMaintenance.vacuum();
       else await resolveMaybePromise(vacuumDatabase());
+      if (typeof pruneOrphanRemoteObjects === "function") {
+        await resolveMaybePromise(pruneOrphanRemoteObjects());
+      }
+      if (typeof pruneOrphanAvatarObjects === "function") {
+        await resolveMaybePromise(pruneOrphanAvatarObjects());
+      }
       log(session, "db.vacuum", { targetType: "system" });
       res.json({ ok: true });
     } catch (err) {

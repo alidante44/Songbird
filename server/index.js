@@ -455,6 +455,7 @@ const {
   resolveAvatarDiskPath,
   normalizeAvatarPublicUrl,
   ensureAvatarExists,
+  storeAvatarFile,
   isDangerousUploadFile,
   registerUploadRoutes,
 } = uploadTools;
@@ -541,6 +542,7 @@ const {
   removeAllMessageUploads,
   computeExpiryIso,
   pruneOrphanRemoteObjects,
+  pruneOrphanAvatarObjects,
 } = messageFileJobs;
 
 const inspector = createInspector({ fs, dataDir, adminGetRow, adminGetAll });
@@ -879,6 +881,7 @@ const apiDeps = {
   removePendingPresignedUploads,
   listPendingPresignedUploads,
   pruneOrphanRemoteObjects,
+  pruneOrphanAvatarObjects,
   setUserColor,
   updateLastSeen,
   updateGroupChat,
@@ -890,6 +893,7 @@ const apiDeps = {
   updateUserProfile,
   updateUserStatus,
   uploadAvatar,
+  storeAvatarFile,
   uploadFiles,
   uploadRootDir,
   upsertRemoteChannelSource,
@@ -1158,6 +1162,7 @@ async function backfillTextMessageExpiry() {
 // server restart.
 try {
   await pruneOrphanRemoteObjects();
+  await pruneOrphanAvatarObjects();
   if (getSetting("MESSAGE_FILE_RETENTION") > 0) {
     await backfillMessageFileExpiry();
     await cleanupExpiredMessageFiles();
@@ -1169,6 +1174,7 @@ try {
 const expiryCleanupTimer = setInterval(async () => {
   try {
     await pruneOrphanRemoteObjects();
+    await pruneOrphanAvatarObjects();
     if (getSetting("MESSAGE_FILE_RETENTION") > 0) {
       await cleanupExpiredMessageFiles();
     }

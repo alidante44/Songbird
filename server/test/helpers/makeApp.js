@@ -85,6 +85,10 @@ export function makeApp(overrides = {}) {
   };
 
   const pendingUploadsStore = [];
+  const defaultStorageProvider =
+    overrides.storageProvider ||
+    overrides.deps?.storageProvider ||
+    createStorageProvider({ STORAGE_DRIVER: "local" });
 
   const deps = {
     // ── Settings ──────────────────────────────────────────────────────────────
@@ -181,7 +185,42 @@ export function makeApp(overrides = {}) {
     uploadRootDir: "/tmp/test-uploads",
     avatarUploadRootDir: "/tmp/test-avatars",
     removeUploadedFiles: () => {},
-    storageProvider: createStorageProvider({ STORAGE_DRIVER: "local" }),
+    hasEnoughFreeDiskSpace: () => true,
+    ALLOWED_AVATAR_MIME_TYPES: new Set([
+      "image/jpeg",
+      "image/png",
+      "image/gif",
+      "image/webp",
+      "image/bmp",
+    ]),
+    AVATAR_FILE_LIMITS: {
+      maxFileSizeBytes: 10 * 1024 * 1024,
+    },
+    storeAvatarFile: async (file) => {
+      const avatarUrl = `/api/uploads/avatars/${file?.filename || "avatar.png"}`;
+      const provider = defaultStorageProvider;
+      if (
+        provider &&
+        (provider.type === "remote" || provider.type === "s3") &&
+        typeof provider.uploadBuffer === "function"
+      ) {
+        let buf = Buffer.from("avatar");
+        if (file?.path && typeof fs.existsSync === "function" && fs.existsSync(file.path)) {
+          buf = fs.readFileSync(file.path);
+        }
+        await provider.uploadBuffer(`avatars/${file?.filename || "avatar.png"}`, buf, file?.mimetype || "image/jpeg");
+        if (file?.path && typeof fs.unlinkSync === "function" && fs.existsSync(file.path)) {
+          fs.unlinkSync(file.path);
+        }
+        return {
+          avatarUrl,
+          storageDriver: provider.type || "s3",
+          storageKey: `avatars/${file?.filename || "avatar.png"}`,
+        };
+      }
+      return { avatarUrl, storageDriver: "local", storageKey: null };
+    },
+    storageProvider: defaultStorageProvider,
     storageProcessingMode: "auto",
     webhookSecret: null,
     workerUrl: null,
@@ -206,7 +245,7 @@ export function makeApp(overrides = {}) {
     },
     listPendingPresignedUploads: () => pendingUploadsStore,
     pruneOrphanRemoteObjects: async (options = {}) => {
-      const provider = options.storageProvider || deps.storageProvider;
+      const provider = options.storageProvider || defaultStorageProvider;
       const prunedKeys = [];
       while (pendingUploadsStore.length > 0) {
         const rec = pendingUploadsStore.pop();
@@ -217,6 +256,7 @@ export function makeApp(overrides = {}) {
       }
       return { prunedCount: prunedKeys.length, prunedKeys };
     },
+    pruneOrphanAvatarObjects: async () => ({ prunedCount: 0, prunedKeys: [] }),
     isLoopbackRequest: () => false,
     chunkArray: (arr) => [arr],
     decodeOriginalFilename: (name) => name,
@@ -278,7 +318,18 @@ export function makeApp(overrides = {}) {
     hideChatsForUser: () => {},
     unhideChat: () => {},
     ensureSavedChatForUser: () => {},
-    removeAvatarByUrl: () => {},
+    removeAvatarByUrl: (url = "") => {
+      const fileName = String(url || "").split("?")[0].split("/").pop();
+      const provider = defaultStorageProvider;
+      if (
+        fileName &&
+        provider &&
+        (provider.type === "remote" || provider.type === "s3") &&
+        typeof provider.deleteFile === "function"
+      ) {
+        provider.deleteFile(`avatars/${fileName}`).catch(() => {});
+      }
+    },
     getTotalUnreadCount: () => 0,
     listMutedUserIdsForChat: () => [],
     upsertPushSubscription: () => {},
