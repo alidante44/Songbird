@@ -516,7 +516,10 @@ async function runDatabaseMigrations() {
           return betterDb ? betterDb.exec(sql) : db?.exec(sql);
         }
         const p = migrationPromiseChain.then(async () => {
-          const res = await dbKnex.raw(sql);
+          // Normalize SQLite dialect (e.g. datetime('now')) just like db.run
+          // so DDL executed via exec gets working Postgres defaults.
+          const { sql: normSql } = normalizeSqlForPostgres(sql, []);
+          const res = await dbKnex.raw(normSql);
           updateSchemaSetsFromSql(sql, tablesSet, columnsSet);
           return res;
         });
@@ -2390,12 +2393,19 @@ export function createMessage(
   const storedBody = storageEncryption.encryptText(body, {
     allowPlaintextSystemMessage,
   });
+  // Set created_at explicitly instead of relying on the DB column default:
+  // SQLite evaluates DEFAULT (datetime('now')) correctly, but Postgres
+  // tables provisioned from the SQLite schema can carry the literal string
+  // "datetime('now')" as their default (see migration 039). Space-separated
+  // UTC matches the legacy row format so TEXT ordering stays consistent.
+  const createdAt = new Date().toISOString().replace("T", " ").slice(0, 19);
   const res = run(
     dbKnex("chat_messages").insert({
       id,
       chat_id: chatId,
       user_id: userId,
       body: storedBody,
+      created_at: createdAt,
       reply_to_message_id: replyToMessageId || null,
       expires_at: expiresAt || null,
       client_request_id: clientRequestId || null,

@@ -36,6 +36,7 @@ import { migration035StorageAndMediaColumns } from "./035-storage-and-media-colu
 import { migration036UuidPrimaryKeys } from "./036-uuid-primary-keys.js";
 import { migration037AutoAddNewUsers } from "./037-auto-add-new-users.js";
 import { migration038PendingPresignedUploads } from "./038-pending-presigned-uploads.js";
+import { migration039PostgresTimestampDefaults } from "./039-postgres-timestamp-defaults.js";
 
 export const migrations = [
   migration001InitialSchema,
@@ -76,4 +77,5 @@ export const migrations = [
   migration036UuidPrimaryKeys,
   migration037AutoAddNewUsers,
   migration038PendingPresignedUploads,
+  migration039PostgresTimestampDefaults,
 ];
