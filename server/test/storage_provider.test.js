@@ -135,6 +135,14 @@ describe("RemoteStorageProvider", () => {
     expect(sendSpy).toHaveBeenCalled();
   });
 
+  it("copies file server-side using CopyObjectCommand", async () => {
+    const provider = new RemoteStorageProvider(s3Config);
+    const sendSpy = vi.spyOn(provider.client, "send").mockResolvedValue({});
+    const res = await provider.copyFile("avatars/a.png", "uploads/avatars/a.png");
+    expect(res.key).toBe("uploads/avatars/a.png");
+    expect(sendSpy).toHaveBeenCalled();
+  });
+
   it("checks file existence using HeadObjectCommand", async () => {
     const provider = new RemoteStorageProvider(s3Config);
 

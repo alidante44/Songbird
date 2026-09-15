@@ -158,4 +158,27 @@ export class LocalStorageProvider extends StorageProvider {
     }
     return items;
   }
+
+  /**
+   * Copy one stored file to a new key within the same uploadDir.
+   * @param {string} srcKey
+   * @param {string} destKey
+   * @returns {Promise<{key: string}>}
+   */
+  async copyFile(srcKey, destKey) {
+    const cleanSrc = String(srcKey || "").replace(/^\//, "");
+    const cleanDest = String(destKey || "").replace(/^\//, "");
+    if (!cleanSrc || !cleanDest) {
+      throw new Error("copyFile requires srcKey and destKey.");
+    }
+    const srcPath = path.isAbsolute(cleanSrc)
+      ? cleanSrc
+      : path.join(this.uploadDir, cleanSrc);
+    const destPath = path.isAbsolute(cleanDest)
+      ? cleanDest
+      : path.join(this.uploadDir, cleanDest);
+    await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
+    await fs.promises.copyFile(srcPath, destPath);
+    return { key: cleanDest };
+  }
 }

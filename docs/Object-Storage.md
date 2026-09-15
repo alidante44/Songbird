@@ -41,7 +41,7 @@ When `STORAGE_DRIVER=remote` is active, Songbird uses a direct client-to-bucket 
 
 1. **Presign Request (`POST /api/uploads/presign`)**:
    - The client browser sends file metadata (`filename`, `mimeType`, `fileSize`, etc.) to the Songbird backend.
-   - The server validates authentication, checks file size limits (`FILE_UPLOAD_MAX_SIZE_MB`), generates a unique storage key (`uploads/<timestamp>_<hash>.<ext>`), and generates a temporary S3 presigned `PUT` URL via `@aws-sdk/s3-request-presigner`.
+   - The server validates authentication, checks file size limits (`FILE_UPLOAD_MAX_SIZE_MB`), generates a unique storage key (`uploads/messages/<timestamp>_<hash>.<ext>` for chat files, `uploads/avatars/<name>.<ext>` for avatars), and generates a temporary S3 presigned `PUT` URL via `@aws-sdk/s3-request-presigner`.
    - The server records a pending upload record in the `pending_presigned_uploads` database table.
 2. **Direct Browser Upload (`PUT <uploadUrl>`)**:
    - The client browser uploads the file payload directly to the Cloudflare R2 / S3 storage endpoint using the presigned URL.

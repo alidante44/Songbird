@@ -23,8 +23,9 @@ export const parseServerDate = (value) => {
 };
 
 export const formatDayLabel = (dateValue) => {
-  const now = new Date();
   const date = parseServerDate(dateValue);
+  if (!Number.isFinite(date.getTime())) return "";
+  const now = new Date();
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const startOfDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
   const diffDays = Math.round(
@@ -42,12 +43,15 @@ export const formatDayLabel = (dateValue) => {
   });
 };
 
-export const formatTime = (dateValue) =>
-  parseServerDate(dateValue).toLocaleTimeString(undefined, {
+export const formatTime = (dateValue) => {
+  const date = parseServerDate(dateValue);
+  if (!Number.isFinite(date.getTime())) return "";
+  return date.toLocaleTimeString(undefined, {
     hour: "2-digit",
     minute: "2-digit",
     hour12: false,
   });
+};
 
 export const formatChatCardTimestamp = (dateValue) => {
   const date = parseServerDate(dateValue);

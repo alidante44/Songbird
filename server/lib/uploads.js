@@ -271,12 +271,19 @@ export function createUploadTools({
         (storageProvider.type === "remote" || storageProvider.type === "s3") &&
         typeof storageProvider.deleteFile === "function"
       ) {
-        storageProvider.deleteFile(`avatars/${fileName}`).catch((err) => {
+        const newKey = `uploads/avatars/${fileName}`;
+        storageProvider.deleteFile(newKey).catch((err) => {
           console.warn(
-            `[uploads] Failed to delete avatar "avatars/${fileName}" from storage:`,
+            `[uploads] Failed to delete avatar "${newKey}" from storage:`,
             err?.message || err,
           );
         });
+        // Best-effort cleanup of legacy keys stored before the
+        // uploads/avatars + uploads/messages unification.
+        const legacyKey = `avatars/${fileName}`;
+        if (legacyKey !== newKey) {
+          storageProvider.deleteFile(legacyKey).catch(() => {});
+        }
       }
     } catch (_) {
       // best effort cleanup
@@ -345,7 +352,7 @@ export function createUploadTools({
       (storageProvider.type === "remote" || storageProvider.type === "s3") &&
       typeof storageProvider.uploadBuffer === "function"
     ) {
-      const fileKey = `avatars/${file.filename}`;
+      const fileKey = `uploads/avatars/${file.filename}`;
       const fileBuf = await fs.promises.readFile(file.path);
       const uploadBuf = storageEncryption.decryptBuffer(fileBuf);
       await storageProvider.uploadBuffer(
@@ -410,7 +417,7 @@ export function createUploadTools({
           typeof storageProvider.getDownloadUrl === "function"
         ) {
           try {
-            const key = row?.storage_key || `uploads/${storedName}`;
+            const key = row?.storage_key || `uploads/messages/${storedName}`;
             const url = await storageProvider.getDownloadUrl(key);
             if (url && url !== `/api/uploads/messages/${storedName}`) {
               return res.redirect(302, url);
@@ -492,11 +499,21 @@ export function createUploadTools({
             typeof storageProvider.getDownloadUrl === "function"
           ) {
             try {
-              const url = await storageProvider.getDownloadUrl(
+              const tryKeys = [
+                `uploads/avatars/${storedName}`,
+                // Legacy key from before uploads/avatars unification.
                 `avatars/${storedName}`,
-              );
-              if (url && url !== `/api/uploads/file/avatars/${storedName}`) {
-                return res.redirect(302, url);
+              ];
+              for (const tryKey of tryKeys) {
+                try {
+                  const url = await storageProvider.getDownloadUrl(tryKey);
+                  if (url && url !== `/api/uploads/file/avatars/${storedName}`) {
+                    return res.redirect(302, url);
+                  }
+                  break;
+                } catch (_) {
+                  continue;
+                }
               }
             } catch (_) {}
           }

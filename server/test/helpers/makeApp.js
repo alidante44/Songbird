@@ -208,14 +208,14 @@ export function makeApp(overrides = {}) {
         if (file?.path && typeof fs.existsSync === "function" && fs.existsSync(file.path)) {
           buf = fs.readFileSync(file.path);
         }
-        await provider.uploadBuffer(`avatars/${file?.filename || "avatar.png"}`, buf, file?.mimetype || "image/jpeg");
+        await provider.uploadBuffer(`uploads/avatars/${file?.filename || "avatar.png"}`, buf, file?.mimetype || "image/jpeg");
         if (file?.path && typeof fs.unlinkSync === "function" && fs.existsSync(file.path)) {
           fs.unlinkSync(file.path);
         }
         return {
           avatarUrl,
           storageDriver: provider.type || "s3",
-          storageKey: `avatars/${file?.filename || "avatar.png"}`,
+          storageKey: `uploads/avatars/${file?.filename || "avatar.png"}`,
         };
       }
       return { avatarUrl, storageDriver: "local", storageKey: null };
@@ -327,7 +327,7 @@ export function makeApp(overrides = {}) {
         (provider.type === "remote" || provider.type === "s3") &&
         typeof provider.deleteFile === "function"
       ) {
-        provider.deleteFile(`avatars/${fileName}`).catch(() => {});
+        provider.deleteFile(`uploads/avatars/${fileName}`).catch(() => {});
       }
     },
     getTotalUnreadCount: () => 0,

@@ -693,7 +693,11 @@ function registerAdminPanelRoutes(app, deps) {
     adminSave();
     const fileName = path.basename(avatarUrl);
     if (fileName && typeof removePendingPresignedUploads === "function") {
-      removePendingPresignedUploads([`avatars/${fileName}`]);
+      removePendingPresignedUploads([
+        `uploads/avatars/${fileName}`,
+        // Legacy key from before uploads/avatars unification.
+        `avatars/${fileName}`,
+      ]);
     }
     log(session, "user.edit", { targetType: "user", targetLabel: user.username, detail: "avatar" });
     res.json({ ok: true, avatarUrl });
@@ -991,7 +995,11 @@ function registerAdminPanelRoutes(app, deps) {
     adminSave();
     const fileName = path.basename(avatarUrl);
     if (fileName && typeof removePendingPresignedUploads === "function") {
-      removePendingPresignedUploads([`avatars/${fileName}`]);
+      removePendingPresignedUploads([
+        `uploads/avatars/${fileName}`,
+        // Legacy key from before uploads/avatars unification.
+        `avatars/${fileName}`,
+      ]);
     }
     emitChatEvent(chatId, { type: "chat_updated", chatId });
     log(session, "chat.edit", { targetType: "chat", targetLabel: chat.name || `Chat #${chatId}`, details: "avatar updated" });

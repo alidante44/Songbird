@@ -40,7 +40,7 @@ STORAGE_DRIVER=remote
 ### جریان آپلود مستقیم
 1. **درخواست Presign (`POST /api/uploads/presign`)**:
    - مرورگر کلاینت متادیتا فایل (`filename`، `mimeType`، `fileSize` و غیره) را به بکاند Songbird ارسال میکند.
-   - سرور احراز هویت را اعتبارسنجی میکند، محدودیت حجم فایل (`FILE_UPLOAD_MAX_SIZE_MB`) را بررسی میکند، یک کلید ذخیره سازی یکتا (`uploads/<timestamp>_<hash>.<ext>`) میسازد و یک Presigned URL از نوع `PUT` توسط `@aws-sdk/s3-request-presigner` تولید میکند.
+   - سرور احراز هویت را اعتبارسنجی میکند، محدودیت حجم فایل (`FILE_UPLOAD_MAX_SIZE_MB`) را بررسی میکند، یک کلید ذخیره سازی یکتا (`uploads/messages/<timestamp>_<hash>.<ext>` برای فایل های چت و `uploads/avatars/<name>.<ext>` برای آواتارها) میسازد و یک Presigned URL از نوع `PUT` توسط `@aws-sdk/s3-request-presigner` تولید میکند.
    - سرور یک رکورد آپلود معلق در جدول `pending_presigned_uploads` دیتابیس ثبت میکند.
 2. **آپلود مستقیم مرورگر (`PUT <uploadUrl>`)**:
    - مرورگر کلاینت باره (payload) فایل را مستقیماً با استفاده از Presigned URL به اندپوینت ذخیره سازی Cloudflare R2 / S3 آپلود میکند.
