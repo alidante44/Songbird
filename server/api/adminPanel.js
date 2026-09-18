@@ -3,7 +3,7 @@ import { createInviteToken } from "../lib/inviteTokens.js";
 import { validateUuidParams } from "../lib/uuidMiddleware.js";
 import { isValidUuid, generateUuid } from "../lib/uuidUtils.js";
 import { writeAdminLog, readAdminLog, clearAdminLog } from "../lib/adminLog.js";
-import { readInstallerLog, readNginxLog, readServiceLog, probeLogSources } from "../lib/systemLogs.js";
+import { readInstallerLog, readNginxLog, readServiceLog, readWorkerLog, probeLogSources } from "../lib/systemLogs.js";
 import { userEvents } from "../lib/workers/autoAddWorker.js";
 import { dbKnex } from "../db/knex.js";
 import os from "node:os";
@@ -1287,6 +1287,12 @@ function registerAdminPanelRoutes(app, deps) {
   app.get("/api/admin/logs/service", async (req, res) => {
     if (!requireAdmin(req, res)) return;
     const result = await readServiceLog({ maxLines: 400 });
+    res.json(result);
+  });
+
+  app.get("/api/admin/logs/worker", async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const result = await readWorkerLog({ maxLines: 400 });
     res.json(result);
   });
 

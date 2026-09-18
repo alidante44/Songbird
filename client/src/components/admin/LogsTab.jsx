@@ -65,6 +65,7 @@ const ALL_LOG_SOURCES = [
   { id: "admin",     label: "Admin Panel" },
   { id: "installer", label: "Installer" },
   { id: "service",   label: "Service" },
+  { id: "worker",    label: "Worker" },
   { id: "nginx",     label: "Nginx" },
 ];
 
@@ -260,6 +261,7 @@ const LogsTab = forwardRef(function LogsTab({ currentUser, active = true }, ref)
     admin:     _logCache.admin     ?? null,
     installer: _logCache.installer ?? null,
     service:   _logCache.service   ?? null,
+    worker:    _logCache.worker    ?? null,
     nginx:     _logCache.nginx     ?? null,
     sources:   _logCache.sources   ?? null, // sources probe result
   }));
@@ -315,14 +317,16 @@ const LogsTab = forwardRef(function LogsTab({ currentUser, active = true }, ref)
   const onAdminFetched   = useCallback((d) => persistCache("admin",     d), [persistCache]);
   const onInstallerFetched = useCallback((d) => persistCache("installer", d), [persistCache]);
   const onServiceFetched = useCallback((d) => persistCache("service",   d), [persistCache]);
+  const onWorkerFetched  = useCallback((d) => persistCache("worker",    d), [persistCache]);
   const onNginxFetched   = useCallback((d) => persistCache("nginx",     d), [persistCache]);
 
   const onFetchedBySource = useMemo(() => ({
     admin:     onAdminFetched,
     installer: onInstallerFetched,
     service:   onServiceFetched,
+    worker:    onWorkerFetched,
     nginx:     onNginxFetched,
-  }), [onAdminFetched, onInstallerFetched, onServiceFetched, onNginxFetched]);
+  }), [onAdminFetched, onInstallerFetched, onServiceFetched, onWorkerFetched, onNginxFetched]);
 
   // Show all tabs always; disable ones that aren't available in this deployment.
   const visibleSources = ALL_LOG_SOURCES.map((s) => ({
