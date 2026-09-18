@@ -36,7 +36,7 @@ import { buildTimestampSchedule } from "./lib/timeUtils.js";
 import { isLoopbackRequest, parseUploadFileMetadata } from "./lib/requestUtils.js";
 import { USERNAME_REGEX } from "./lib/validation.js";
 import { USER_COLORS, setUserColor } from "./settings/colors.js";
-import { readEnvInt, readDbConfig, parseEnv } from "./settings/env.js";
+import { readDbConfig, parseEnv } from "./settings/env.js";
 import { createPostgresMaintenance } from "./lib/postgresMaintenance.js";
 import { dbKnex } from "./db/knex.js";
 import {
@@ -158,7 +158,11 @@ import {
   dbGetAllSettings,
   dbSetSetting,
   dbDeleteSetting,
+  dbGetSetting,
 } from "./db.js";
+import { resolveTelegramSecrets } from "./lib/remoteChannelSecrets.js";
+import { createMirrorJobRegistry } from "./lib/remoteMirrorJobs.js";
+import { dispatchMirrorJob } from "./lib/remoteMirrorDispatch.js";
 import {
   loadSettings,
   getSetting,
@@ -325,18 +329,12 @@ const FILE_UPLOAD = getSetting("FILE_UPLOAD");
 const REMOTE_CHANNEL = getSetting("REMOTE_CHANNEL");
 const REMOTE_CHANNEL_UI = getSetting("REMOTE_CHANNEL_UI");
 const REMOTE_CHANNEL_MEDIA_STREAM = getSetting("REMOTE_CHANNEL_MEDIA_STREAM");
-// Telegram credentials remain in .env (secrets — never stored in DB)
-const REMOTE_CHANNEL_TELEGRAM_API_ID = readEnvInt(
-  "REMOTE_CHANNEL_TELEGRAM_API_ID",
-  0,
-  { min: 1 },
-);
-const REMOTE_CHANNEL_TELEGRAM_API_HASH = String(
-  process.env.REMOTE_CHANNEL_TELEGRAM_API_HASH || "",
-).trim();
-const REMOTE_CHANNEL_TELEGRAM_SESSION_STRING = String(
-  process.env.REMOTE_CHANNEL_TELEGRAM_SESSION_STRING || "",
-).trim();
+// Telegram credentials live outside the settings registry (Services setup or
+// .env). Env vars win when set, otherwise the DB rows written by the setup flow.
+const REMOTE_CHANNEL_SECRETS = await resolveTelegramSecrets({ dbGetSetting });
+const REMOTE_CHANNEL_TELEGRAM_API_ID = REMOTE_CHANNEL_SECRETS.apiId;
+const REMOTE_CHANNEL_TELEGRAM_API_HASH = REMOTE_CHANNEL_SECRETS.apiHash;
+const REMOTE_CHANNEL_TELEGRAM_SESSION_STRING = REMOTE_CHANNEL_SECRETS.sessionString;
 const REMOTE_CHANNEL_PROXY_URL = String(
   getSetting("REMOTE_CHANNEL_TELEGRAM_PROXY_URL") || "",
 ).trim();
@@ -965,6 +963,9 @@ const apiDeps = {
   resetSetting,
   validateSetting,
   SETTING_DEFS,
+  dbGetSetting,
+  dbSetSetting,
+  dbDeleteSetting,
   dbRun: adminRun,
   dbSave: adminSave,
 };
@@ -973,6 +974,92 @@ apiDeps.postgresMaintenance = apiDeps.dbConfig.client === "postgres"
   ? createPostgresMaintenance({ config: apiDeps.dbConfig })
   : null;
 
+// Mirror-job registry + worker dispatch (Option A). The manager is created
+// below; the ref is filled right after so the fallback can finish inline.
+const mirrorJobRegistry = createMirrorJobRegistry({});
+const mirrorManagerRef = {};
+const dispatchMirrorMedia = async ({
+  descriptor,
+  storedName,
+  filePath,
+  actualSize,
+  messageId,
+  chatId,
+  authorId,
+  authorUsername,
+}) => {
+  const { dispatched } = await dispatchMirrorJob({
+    workerUrl: process.env.WORKER_URL || process.env.MEDIA_WORKER_URL || null,
+    storageProcessingMode: process.env.STORAGE_PROCESSING_MODE || "auto",
+    workerPort: process.env.WORKER_PORT || "8080",
+    serverPort: process.env.PORT || process.env.SERVER_PORT || "5174",
+    processingTimeoutMs: Number(process.env.STORAGE_PROCESSING_TIMEOUT_MS) || 120000,
+    webhookSecret: process.env.WEBHOOK_SECRET || null,
+    registry: mirrorJobRegistry,
+    storageKey: `uploads/messages/${storedName}`,
+    jobMeta: {
+      filePath,
+      storedName,
+      mimeType: descriptor?.mimeType || null,
+      kind: descriptor?.kind || null,
+      originalName: descriptor?.originalName || null,
+      widthPx: descriptor?.widthPx ?? null,
+      heightPx: descriptor?.heightPx ?? null,
+      durationSeconds: descriptor?.durationSeconds ?? null,
+      maxBytes: FILE_UPLOAD_MAX_SIZE,
+      actualSize,
+      descriptor,
+      messageId,
+      chatId,
+      authorId,
+      authorUsername,
+    },
+    onFallback: async () => {
+      const manager = mirrorManagerRef.current;
+      if (!manager) return;
+      // The queue item may have been retried while the worker was slow —
+      // skip when the file is already attached (the temp is swept later).
+      try {
+        if (
+          await manager.hasMirroredFile?.(
+            messageId,
+            descriptor?.originalName || storedName,
+          )
+        ) {
+          return;
+        }
+      } catch {
+        // Best effort — fall through to the attach attempt.
+      }
+      const finished = await manager.finishMirroredMediaFile({
+        descriptor,
+        storedName,
+        filePath,
+        actualSize,
+      });
+      if (finished?.file) {
+        await manager.attachMirroredMedia({
+          messageId,
+          chatId,
+          authorId,
+          authorUsername,
+          file: finished.file,
+        });
+      }
+    },
+  });
+  return dispatched;
+};
+// Reap orphaned mirror temps (e.g. after an unclean shutdown).
+const mirrorSweepTimer = setInterval(() => {
+  try {
+    mirrorJobRegistry.sweep();
+  } catch {
+    // Best effort only.
+  }
+}, 5 * 60 * 1000);
+if (typeof mirrorSweepTimer.unref === "function") mirrorSweepTimer.unref();
+
 const remoteChannelManager = createRemoteChannelManager({
   config: REMOTE_CHANNEL_CONFIG,
   computeExpiryIso,
@@ -980,6 +1067,7 @@ const remoteChannelManager = createRemoteChannelManager({
   createOrReuseMessage,
   crypto,
   debugLog,
+  dispatchMirrorMedia,
   emitChatEvent,
   emitSseEvent,
   enqueueVideoTranscodeJob,
@@ -1015,12 +1103,15 @@ const remoteChannelManager = createRemoteChannelManager({
   setMessageForwardOrigin,
   setRemoteChannelProviderState,
   storageEncryption,
+  storageProvider,
   updateChannelChat,
   updateRemoteChannelSourceError,
   updateRemoteChannelSourceSeen,
 });
 
 apiDeps.remoteChannelManager = remoteChannelManager;
+apiDeps.mirrorJobRegistry = mirrorJobRegistry;
+mirrorManagerRef.current = remoteChannelManager;
 
 if (isProduction) {
   app.use("/api", apiLimiter);

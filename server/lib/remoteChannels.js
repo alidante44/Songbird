@@ -812,6 +812,7 @@ export function createRemoteChannelManager(deps = {}) {
     createOrReuseMessage,
     crypto,
     debugLog = () => {},
+    dispatchMirrorMedia,
     emitChatEvent,
     emitSseEvent,
     enqueueVideoTranscodeJob,
@@ -847,6 +848,7 @@ export function createRemoteChannelManager(deps = {}) {
     setMessageForwardOrigin,
     setRemoteChannelProviderState,
     storageEncryption,
+    storageProvider,
     updateChannelChat,
     updateRemoteChannelSourceError,
     updateRemoteChannelSourceSeen,
@@ -855,9 +857,9 @@ export function createRemoteChannelManager(deps = {}) {
   const resolveMaybePromise = async (value) =>
     value && typeof value.then === "function" ? await value : value;
 
-  const apiId = Number(config.telegramApiId || 0);
-  const apiHash = String(config.telegramApiHash || "").trim();
-  const sessionString = String(config.telegramSessionString || "").trim();
+  let apiId = Number(config.telegramApiId || 0);
+  let apiHash = String(config.telegramApiHash || "").trim();
+  let sessionString = String(config.telegramSessionString || "").trim();
   // The manager is enabled if the feature is on — Songbird sources work without
   // Telegram credentials. Telegram sources additionally require apiId/hash/session.
   const enabled = Boolean(config.enabled);
@@ -921,6 +923,57 @@ export function createRemoteChannelManager(deps = {}) {
   const abortedSourceIds = new Set();
 
   const log = (...args) => debugLog("remote-channel", ...args);
+
+  function isRemoteStorage() {
+    const type = storageProvider?.type;
+    return (
+      (type === "remote" || type === "s3") &&
+      typeof storageProvider?.uploadBuffer === "function"
+    );
+  }
+
+  // Upload a mirrored file to bucket storage (remote driver only) and remove the local copy.
+  async function uploadMirroredFileToBucket({ filePath, storageKey, mimeType }) {
+    if (!isRemoteStorage() || !filePath || !storageKey) return null;
+    try {
+      const readFile =
+        fs?.promises?.readFile?.bind(fs.promises) || fs?.readFileSync?.bind(fs);
+      const unlinkFile =
+        fs?.promises?.unlink?.bind(fs.promises) || fs?.unlinkSync?.bind(fs);
+      if (typeof readFile !== "function") return null;
+      const encryptedBytes = await readFile(filePath);
+      const uploadBytes =
+        typeof storageEncryption?.decryptBuffer === "function"
+          ? storageEncryption.decryptBuffer(encryptedBytes)
+          : encryptedBytes;
+      await storageProvider.uploadBuffer(
+        storageKey,
+        uploadBytes,
+        mimeType || "application/octet-stream",
+      );
+      if (typeof unlinkFile === "function") {
+        try {
+          await unlinkFile(filePath);
+        } catch {
+          // Local cleanup is best-effort; the bucket copy already succeeded.
+        }
+      }
+      return {
+        storageDriver: storageProvider.type || "s3",
+        storage_driver: storageProvider.type || "s3",
+        storageKey,
+        storage_key: storageKey,
+        encryptionType: "none",
+        encryption_type: "none",
+      };
+    } catch (error) {
+      log("storage:upload-skip", {
+        storageKey,
+        error: errorMessage(error),
+      });
+      return null;
+    }
+  }
 
   function createClient() {
     const telegramClient = new TelegramClient(new StringSession(sessionString), apiId, apiHash, {
@@ -1117,6 +1170,12 @@ export function createRemoteChannelManager(deps = {}) {
       fs.mkdirSync(avatarUploadRootDir, { recursive: true });
       fs.writeFileSync(filePath, buffer);
       storageEncryption?.encryptFileInPlace?.(filePath);
+      // Same URL shape as user avatars on bucket deployments.
+      await uploadMirroredFileToBucket({
+        filePath,
+        storageKey: `uploads/avatars/${fileName}`,
+        mimeType: "image/jpeg",
+      });
       return `/api/uploads/avatars/${fileName}`;
     } catch {
       return source?.source_avatar_url || "";
@@ -1316,6 +1375,11 @@ export function createRemoteChannelManager(deps = {}) {
             fs.mkdirSync(avatarUploadRootDir, { recursive: true });
             fs.writeFileSync(filePath, buffer);
             storageEncryption?.encryptFileInPlace?.(filePath);
+            await uploadMirroredFileToBucket({
+              filePath,
+              storageKey: `uploads/avatars/${fileName}`,
+              mimeType: "image/jpeg",
+            });
             localAvatarUrl = `/api/uploads/avatars/${fileName}`;
           }
         }
@@ -1910,7 +1974,10 @@ export function createRemoteChannelManager(deps = {}) {
     );
   }
 
-  async function downloadTelegramMediaFile(activeClient, message, index, stats) {
+  // Stage 1: download Telegram bytes to a temp file (session-bound I/O that
+  // must stay on the server). Returns descriptor + temp location, or null
+  // when the file is rejected by the size gates.
+  async function fetchTelegramMediaToTemp(activeClient, message, index, stats) {
     const descriptor = getTelegramMediaDescriptor(message, index);
     if (!descriptor) return null;
     if (
@@ -1965,7 +2032,26 @@ export function createRemoteChannelManager(deps = {}) {
         safeUnlink(filePath);
         return null;
       }
+      return { descriptor, storedName, filePath, actualSize };
+    } catch (error) {
+      safeUnlink(filePath);
+      if (isTelegramConnectionError(error)) {
+        throw error;
+      }
+      log("media:skip", {
+        messageId: normalizeMessageId(message?.id),
+        error: errorMessage(error),
+      });
+      return null;
+    }
+  }
 
+  // Stage 2 (inline): probe, encrypt, and bucket-upload a fetched temp file.
+  // Used directly and as the local fallback when worker dispatch declines.
+  async function finishMirroredMediaFile({ descriptor, storedName, filePath, actualSize }) {
+    if (!descriptor || !storedName || !filePath) return null;
+    if (!fs.existsSync(filePath)) return null;
+    try {
       const normalized = {
         kind: descriptor.kind,
         originalName: descriptor.originalName,
@@ -1979,6 +2065,11 @@ export function createRemoteChannelManager(deps = {}) {
           typeof computeExpiryIso === "function"
             ? computeExpiryIso(new Date().toISOString(), messageFileRetentionDays)
             : null,
+        // Local disk by default; replaced with bucket coordinates below.
+        storageDriver: "local",
+        storage_driver: "local",
+        storageKey: null,
+        storage_key: null,
       };
 
       if (
@@ -2000,18 +2091,32 @@ export function createRemoteChannelManager(deps = {}) {
       storageEncryption?.encryptFileInPlace?.(filePath);
       // Keep the DB record in sync with the bytes on disk.
       markEncryptedFileRecord(storageEncryption, filePath, normalized);
+      // On bucket-backed deployments the local copy must not be the record
+      // of truth (ephemeral disks, multi-node) — upload and drop it.
+      const bucketFields = await uploadMirroredFileToBucket({
+        filePath,
+        storageKey: `uploads/messages/${storedName}`,
+        mimeType: normalized.mimeType,
+      });
+      if (bucketFields) {
+        Object.assign(normalized, bucketFields);
+        return { file: normalized, filePath: null };
+      }
       return { file: normalized, filePath };
     } catch (error) {
       safeUnlink(filePath);
-      if (isTelegramConnectionError(error)) {
-        throw error;
-      }
-      log("media:skip", {
-        messageId: normalizeMessageId(message?.id),
+      log("media:finish-skip", {
+        storedName,
         error: errorMessage(error),
       });
       return null;
     }
+  }
+
+  async function downloadTelegramMediaFile(activeClient, message, index, stats) {
+    const fetched = await fetchTelegramMediaToTemp(activeClient, message, index, stats);
+    if (!fetched) return null;
+    return finishMirroredMediaFile(fetched);
   }
 
   async function maybeEnqueueRemoteVideoTranscode({ chat, messageId, author, file }) {
@@ -2065,6 +2170,38 @@ export function createRemoteChannelManager(deps = {}) {
     return requestedIds.map((id) => byId.get(id)).filter(Boolean);
   }
 
+  async function hasMirroredFile(messageId, originalName) {
+    const name = String(originalName || "").trim();
+    if (!messageId || !name || typeof listMessageFilesByMessageIds !== "function") {
+      return false;
+    }
+    const rows = (await resolveMaybePromise(listMessageFilesByMessageIds([messageId]))) || [];
+    return rows.some((row) => String(row?.original_name || "").trim() === name);
+  }
+
+  // Attach a finished file record to its message, clear expiry, kick off
+  // video transcoding, and notify clients. Shared by the inline path, the
+  // worker webhook, and the local fallback timer.
+  async function attachMirroredMedia({ messageId, chatId, authorId, authorUsername, file }) {
+    if (!messageId || !file) return null;
+    await resolveMaybePromise(createMessageFiles(messageId, [file]));
+    await resolveMaybePromise(setMessageExpiresAt?.(messageId, null));
+    await maybeEnqueueRemoteVideoTranscode({
+      chat: { id: chatId },
+      messageId,
+      author: { id: authorId, username: authorUsername },
+      file,
+    });
+    emitChatEvent(chatId, {
+      type: "chat_message_updated",
+      chatId,
+      messageId,
+      username: authorUsername,
+      userId: authorId,
+    });
+    return messageId;
+  }
+
   async function streamTelegramMediaFiles({
     activeClient,
     entity,
@@ -2090,17 +2227,22 @@ export function createRemoteChannelManager(deps = {}) {
       const descriptor = getTelegramMediaDescriptor(mediaMessages[index], index);
       if (!descriptor || stats.names.has(descriptor.originalName)) continue;
 
-      const downloaded = await downloadTelegramMediaFile(
+      const fetched = await fetchTelegramMediaToTemp(
         activeClient,
         mediaMessages[index],
         index,
         stats,
       );
-      if (!downloaded?.file) continue;
+      if (!fetched) continue;
 
       let targetMessageId = null;
       try {
-        const summaryText = summarizeMediaFiles([downloaded.file]);
+        const fetchedFile = {
+          kind: fetched.descriptor.kind,
+          originalName: fetched.descriptor.originalName,
+          mimeType: fetched.descriptor.mimeType,
+        };
+        const summaryText = summarizeMediaFiles([fetchedFile]);
         targetMessageId = await ensureMessage(summaryText || "Sent a media file", {
           hasMedia: true,
           summaryText,
@@ -2108,33 +2250,44 @@ export function createRemoteChannelManager(deps = {}) {
         const latestStats = await readExistingMessageFileStats(targetMessageId);
         if (
           latestStats.count >= maxMediaFilesPerMessage ||
-          latestStats.names.has(downloaded.file.originalName) ||
-          latestStats.totalBytes + downloaded.file.sizeBytes > maxMediaTotalBytes
+          latestStats.names.has(fetched.descriptor.originalName) ||
+          latestStats.totalBytes + fetched.actualSize > maxMediaTotalBytes
         ) {
-          safeUnlink(downloaded.filePath);
+          safeUnlink(fetched.filePath);
           continue;
         }
 
-        await resolveMaybePromise(createMessageFiles(targetMessageId, [downloaded.file]));
-        await resolveMaybePromise(setMessageExpiresAt?.(targetMessageId, null));
-        attached += 1;
+        // Option A: hand probe/encrypt/upload to the media worker. The
+        // webhook (or the local fallback timer) attaches the finished file.
+        if (typeof dispatchMirrorMedia === "function") {
+          const dispatched = await dispatchMirrorMedia({
+            descriptor: fetched.descriptor,
+            storedName: fetched.storedName,
+            filePath: fetched.filePath,
+            actualSize: fetched.actualSize,
+            messageId: targetMessageId,
+            chatId: chat.id,
+            authorId: author.id,
+            authorUsername: author.username,
+          });
+          if (dispatched) {
+            attached += 1;
+            continue;
+          }
+        }
 
-        await maybeEnqueueRemoteVideoTranscode({
-          chat,
+        const finished = await finishMirroredMediaFile(fetched);
+        if (!finished?.file) continue;
+        await attachMirroredMedia({
           messageId: targetMessageId,
-          author,
-          file: downloaded.file,
-        });
-
-        emitChatEvent(chat.id, {
-          type: "chat_message_updated",
           chatId: chat.id,
-          messageId: targetMessageId,
-          username: author.username,
-          userId: author.id,
+          authorId: author.id,
+          authorUsername: author.username,
+          file: finished.file,
         });
+        attached += 1;
       } catch (error) {
-        safeUnlink(downloaded.filePath);
+        safeUnlink(fetched.filePath);
         throw error;
       }
     }
@@ -2482,6 +2635,22 @@ export function createRemoteChannelManager(deps = {}) {
         ),
       ),
     );
+
+    // Notify members of touched channels so open profile 
+    // modals refresh from the cached status endpoint.
+    for (const [sourceId, sourceItems] of bySource) {
+      const chatId = sourceItems[0]?.chat_id || null;
+      if (!chatId) continue;
+      try {
+        emitChatEvent?.(chatId, {
+          type: "remote_channel_queue",
+          chatId,
+          sourceId,
+        });
+      } catch {
+        // Realtime notify must never break queue progress.
+      }
+    }
   }
 
   async function runQueueLoop() {
@@ -2635,10 +2804,60 @@ export function createRemoteChannelManager(deps = {}) {
     return resolveMaybePromise(skipAllRemoteChannelQueueItemsDb(id));
   }
 
+  async function getHealth() {
+    const telegramConfigured = Boolean(apiId && apiHash && sessionString);
+    return {
+      enabled,
+      telegramConfigured,
+      telegramConnected: Boolean(client),
+      pollLoopRunning,
+      queueLoopRunning,
+      pollIntervalMs,
+      queueIntervalMs,
+      queueBatchSize,
+      queueConcurrency,
+    };
+  }
+
+  // Hot-reload Telegram credentials saved from the admin panel (no restart).
+  // Drops the live MTProto client so the next poll loop reconnects with the
+  // new identity; poll/queue loops keep running.
+  async function reloadConfig(nextConfig = {}) {
+    if (nextConfig.telegramApiId !== undefined) apiId = Number(nextConfig.telegramApiId || 0);
+    if (nextConfig.telegramApiHash !== undefined) apiHash = String(nextConfig.telegramApiHash || "").trim();
+    if (nextConfig.telegramSessionString !== undefined) {
+      sessionString = String(nextConfig.telegramSessionString || "").trim();
+    }
+    clientResetRequired = true;
+    clientResetReason = "credentials updated";
+    if (client) {
+      const staleClient = client;
+      client = null;
+      await destroyTelegramClient(staleClient, "credentials updated").catch(() => {});
+    }
+    // If the feature just got credentials while running, ensure the Telegram
+    // poll loop is active.
+    if (enabled && !stopped && apiId && apiHash && sessionString && !pollLoopRunning) {
+      void runPollLoop();
+    }
+    return getHealth();
+  }
+
   return {
     start,
     stop,
     isEnabled: () => enabled,
+    reloadConfig,
+    getHealth,
+    runQueueOnce,
+    // Staged media pipeline (also reused by the worker webhook + fallback).
+    downloadTelegramMediaFile,
+    fetchTelegramMediaToTemp,
+    finishMirroredMediaFile,
+    attachMirroredMedia,
+    hasMirroredFile,
+    streamTelegramMediaFiles,
+    cacheSourceAvatar,
     syncSourceMetadata,
     testConnection,
     abortQueueItem,
