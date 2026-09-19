@@ -147,6 +147,7 @@ sudo tee /etc/sudoers.d/songbird > /dev/null <<'EOF'
 songbird ALL=(root) NOPASSWD: /usr/bin/systemctl restart songbird.service
 songbird ALL=(root) NOPASSWD: /usr/bin/systemctl stop songbird.service
 songbird ALL=(root) NOPASSWD: /usr/bin/journalctl -u songbird *
+songbird ALL=(root) NOPASSWD: /usr/bin/journalctl -u songbird-worker *
 songbird ALL=(root) NOPASSWD: /usr/bin/cat /var/log/nginx/error.log
 songbird ALL=(root) NOPASSWD: /usr/bin/cat /var/log/nginx/access.log
 songbird ALL=(root) NOPASSWD: /usr/bin/nginx -t

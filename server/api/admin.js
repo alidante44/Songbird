@@ -64,6 +64,7 @@ function registerAdminRoutes(app, deps) {
     isLoopbackRequest,
     removeAllMessageUploads,
     removeStoredFileNames,
+    removeAvatarByUrl = deps.removeAvatarByUrl,
     adminResetDatabase,
     buildInspectSnapshot,
     buildTimestampSchedule,
@@ -1744,19 +1745,17 @@ function registerAdminRoutes(app, deps) {
         }
 
         removeStoredFileNames(messageStoredNames);
-        const avatarNames = targetAvatarUsers.map((row) =>
-          path.basename(String(row.avatar_url || "").trim()),
-        );
-
-        avatarNames.forEach((name) => {
-          try {
-            const filePath = path.join(avatarUploadRootDir, name);
-
-            if (name && fs.existsSync(filePath)) {
-              fs.unlinkSync(filePath);
-            }
-          } catch (_) {
-            // best effort cleanup
+        targetAvatarUsers.forEach((row) => {
+          if (row.avatar_url && typeof removeAvatarByUrl === "function") {
+            removeAvatarByUrl(row.avatar_url);
+          } else {
+            try {
+              const name = path.basename(String(row.avatar_url || "").trim());
+              const filePath = path.join(avatarUploadRootDir, name);
+              if (name && fs.existsSync(filePath)) {
+                fs.unlinkSync(filePath);
+              }
+            } catch (_) {}
           }
         });
 

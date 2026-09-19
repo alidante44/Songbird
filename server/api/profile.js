@@ -1,3 +1,5 @@
+import path from "node:path";
+
 function registerProfileRoutes(app, deps) {
   const {
     ALLOWED_AVATAR_MIME_TYPES,
@@ -22,11 +24,13 @@ function registerProfileRoutes(app, deps) {
     avatarUploadRootDir,
     clearSessionCookie,
     removeAvatarByUrl,
+    removePendingPresignedUploads,
     removeStoredFileNames,
     removeUploadedFiles,
     requireSession,
     requireSessionUsernameMatch,
     storageEncryption,
+    storeAvatarFile = deps.storeAvatarFile,
     updateUserPassword,
     updateUserProfile,
     updateUserStatus,
@@ -229,34 +233,56 @@ function registerProfileRoutes(app, deps) {
       return res.status(404).json({ error: "User not found." });
     }
 
-    if (!file) {
-      return res.status(400).json({ error: "Avatar file is required." });
-    }
+    const directAvatarUrl = String(req.body?.avatarUrl || "").trim();
+    let avatarUrl = "";
 
-    const avatarMime = String(file.mimetype || "").toLowerCase();
-    if (!ALLOWED_AVATAR_MIME_TYPES.has(avatarMime)) {
-      removeUploadedFiles([file], avatarUploadRootDir);
-      return res
-        .status(400)
-        .json({ error: "Avatar must be a JPEG, PNG, GIF, WEBP, or BMP image." });
-    }
+    if (directAvatarUrl) {
+      const fileName = path.basename(directAvatarUrl);
+      if (
+        (!directAvatarUrl.startsWith("/api/uploads/avatars/") &&
+          !directAvatarUrl.startsWith("/uploads/avatars/")) ||
+        !fileName.startsWith("avatar-") ||
+        fileName.includes("..")
+      ) {
+        return res.status(400).json({ error: "Invalid avatar URL." });
+      }
+      avatarUrl = directAvatarUrl.startsWith("/uploads/")
+        ? `/api${directAvatarUrl}`
+        : directAvatarUrl;
+    } else {
+      if (!file) {
+        return res.status(400).json({ error: "Avatar file is required." });
+      }
 
-    if (!hasEnoughFreeDiskSpace(Number(file.size || 0))) {
-      removeUploadedFiles([file], avatarUploadRootDir);
+      const avatarMime = String(file.mimetype || "").toLowerCase();
+      if (!ALLOWED_AVATAR_MIME_TYPES.has(avatarMime)) {
+        removeUploadedFiles([file], avatarUploadRootDir);
+        return res
+          .status(400)
+          .json({ error: "Avatar must be a JPEG, PNG, GIF, WEBP, or BMP image." });
+      }
 
-      return res
-        .status(400)
-        .json({ error: "Not enough free storage space on server." });
-    }
+      if (typeof hasEnoughFreeDiskSpace === "function" && !hasEnoughFreeDiskSpace(Number(file.size || 0))) {
+        removeUploadedFiles([file], avatarUploadRootDir);
+        return res
+          .status(400)
+          .json({ error: "Not enough free storage space on server." });
+      }
 
-    const avatarUrl = `/api/uploads/avatars/${file.filename}`;
-    try {
-      storageEncryption.encryptFileInPlace(file.path);
-    } catch {
-      removeUploadedFiles([file], avatarUploadRootDir);
-      return res
-        .status(500)
-        .json({ error: "Unable to store avatar securely." });
+      try {
+        if (typeof storeAvatarFile === "function") {
+          const stored = await storeAvatarFile(file);
+          avatarUrl = stored.avatarUrl;
+        } else {
+          avatarUrl = `/api/uploads/avatars/${file.filename}`;
+          storageEncryption?.encryptFileInPlace?.(file.path);
+        }
+      } catch {
+        removeUploadedFiles([file], avatarUploadRootDir);
+        return res
+          .status(500)
+          .json({ error: "Unable to store avatar securely." });
+      }
     }
 
     if (String(user.avatar_url || "").trim() && user.avatar_url !== avatarUrl) {
@@ -270,6 +296,15 @@ function registerProfileRoutes(app, deps) {
       avatarUrl,
     );
 
+    const fileName = path.basename(avatarUrl);
+    if (fileName && typeof removePendingPresignedUploads === "function") {
+      removePendingPresignedUploads([
+        `uploads/avatars/${fileName}`,
+        // Legacy key from before uploads/avatars unification.
+        `avatars/${fileName}`,
+      ]);
+    }
+
     const rawUpdated = findUserById(user.id);
     const updated = rawUpdated && typeof rawUpdated.then === "function" ? await rawUpdated : rawUpdated;
     await emitProfileUpdate(updated, {
@@ -281,8 +316,8 @@ function registerProfileRoutes(app, deps) {
 
     return res.json({
       avatarUrl: ensureAvatarExists(updated.id, updated.avatar_url) || avatarUrl,
-      sizeBytes: Number(file.size || 0),
-      maxFileSizeBytes: AVATAR_FILE_LIMITS.maxFileSizeBytes,
+      sizeBytes: Number(file?.size || 0),
+      maxFileSizeBytes: AVATAR_FILE_LIMITS?.maxFileSizeBytes || 10 * 1024 * 1024,
     });
   });
 

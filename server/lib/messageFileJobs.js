@@ -340,6 +340,66 @@ export function createMessageFileJobs({
       (referencedRows || []).map((r) => r.storage_key).filter(Boolean),
     );
 
+    const avatarKeysToCheck = keysToCheck.filter(
+      (k) =>
+        k.startsWith("uploads/avatars/") ||
+        k.startsWith("avatars/") ||
+        k.includes("avatar-"),
+    );
+    if (avatarKeysToCheck.length) {
+      const rawUsers = adminGetAll(
+        dbKnex("users").select("avatar_url").whereNotNull("avatar_url"),
+      );
+      const userRows =
+        (rawUsers && typeof rawUsers.then === "function"
+          ? await rawUsers
+          : rawUsers) || [];
+      userRows.forEach((row) => {
+        const fn = path.basename(String(row?.avatar_url || "").trim());
+        if (fn) {
+          avatarKeysToCheck.forEach((k) => {
+            if (k.endsWith(fn)) referencedKeysSet.add(k);
+          });
+        }
+      });
+
+      const rawChats = adminGetAll(
+        dbKnex("chats").select("group_avatar_url").whereNotNull("group_avatar_url"),
+      );
+      const chatRows =
+        (rawChats && typeof rawChats.then === "function"
+          ? await rawChats
+          : rawChats) || [];
+      chatRows.forEach((row) => {
+        const fn = path.basename(String(row?.group_avatar_url || "").trim());
+        if (fn) {
+          avatarKeysToCheck.forEach((k) => {
+            if (k.endsWith(fn)) referencedKeysSet.add(k);
+          });
+        }
+      });
+
+      try {
+        const rawSources = adminGetAll(
+          dbKnex("remote_channel_sources")
+            .select("source_avatar_url")
+            .whereNotNull("source_avatar_url"),
+        );
+        const sourceRows =
+          (rawSources && typeof rawSources.then === "function"
+            ? await rawSources
+            : rawSources) || [];
+        sourceRows.forEach((row) => {
+          const fn = path.basename(String(row?.source_avatar_url || "").trim());
+          if (fn) {
+            avatarKeysToCheck.forEach((k) => {
+              if (k.endsWith(fn)) referencedKeysSet.add(k);
+            });
+          }
+        });
+      } catch (_) {}
+    }
+
     const orphanKeys = keysToCheck.filter((key) => !referencedKeysSet.has(key));
     const claimedKeys = keysToCheck.filter((key) => referencedKeysSet.has(key));
 
@@ -381,6 +441,115 @@ export function createMessageFileJobs({
     };
   };
 
+  const pruneOrphanAvatarObjects = async (options = {}) => {
+    const {
+      maxAgeMs = 60 * 60 * 1000,
+      storageProvider: activeStorageProvider = storageProvider,
+    } = options;
+
+    if (
+      !activeStorageProvider ||
+      (activeStorageProvider.type !== "remote" &&
+        activeStorageProvider.type !== "s3") ||
+      typeof activeStorageProvider.listObjects !== "function"
+    ) {
+      return { prunedCount: 0, prunedKeys: [] };
+    }
+
+    const s3ObjectsNew =
+      (await activeStorageProvider.listObjects("uploads/avatars/")) || [];
+    // Legacy prefix from before uploads/avatars unification — still swept
+    // so old orphan avatars don't linger forever.
+    let s3ObjectsLegacy = [];
+    try {
+      s3ObjectsLegacy =
+        (await activeStorageProvider.listObjects("avatars/")) || [];
+    } catch (_) {
+      s3ObjectsLegacy = [];
+    }
+    const seenKeys = new Set();
+    const s3Objects = [...s3ObjectsNew, ...s3ObjectsLegacy].filter((obj) => {
+      if (!obj?.key || seenKeys.has(obj.key)) return false;
+      seenKeys.add(obj.key);
+      return true;
+    });
+    if (!s3Objects || !s3Objects.length) {
+      return { prunedCount: 0, prunedKeys: [] };
+    }
+
+    const cutoffTime = Date.now() - maxAgeMs;
+    const candidates = s3Objects.filter((obj) => {
+      if (obj.lastModified && obj.lastModified.getTime() > cutoffTime) {
+        return false;
+      }
+      return true;
+    });
+
+    if (!candidates.length) {
+      return { prunedCount: 0, prunedKeys: [] };
+    }
+
+    const activeFileNames = new Set();
+
+    const rawUsers = adminGetAll(
+      dbKnex("users").select("avatar_url").whereNotNull("avatar_url"),
+    );
+    const userRows =
+      (rawUsers && typeof rawUsers.then === "function"
+        ? await rawUsers
+        : rawUsers) || [];
+    userRows.forEach((r) => {
+      const fn = path.basename(String(r?.avatar_url || "").trim());
+      if (fn) activeFileNames.add(fn);
+    });
+
+    const rawChats = adminGetAll(
+      dbKnex("chats").select("group_avatar_url").whereNotNull("group_avatar_url"),
+    );
+    const chatRows =
+      (rawChats && typeof rawChats.then === "function"
+        ? await rawChats
+        : rawChats) || [];
+    chatRows.forEach((r) => {
+      const fn = path.basename(String(r?.group_avatar_url || "").trim());
+      if (fn) activeFileNames.add(fn);
+    });
+
+    try {
+      const rawSources = adminGetAll(
+        dbKnex("remote_channel_sources")
+          .select("source_avatar_url")
+          .whereNotNull("source_avatar_url"),
+      );
+      const sourceRows =
+        (rawSources && typeof rawSources.then === "function"
+          ? await rawSources
+          : rawSources) || [];
+      sourceRows.forEach((r) => {
+        const fn = path.basename(String(r?.source_avatar_url || "").trim());
+        if (fn) activeFileNames.add(fn);
+      });
+    } catch (_) {}
+
+    const prunedKeys = [];
+    for (const obj of candidates) {
+      const fileName = path.basename(obj.key);
+      if (fileName && !activeFileNames.has(fileName)) {
+        try {
+          if (typeof activeStorageProvider.deleteFile === "function") {
+            await activeStorageProvider.deleteFile(obj.key);
+          }
+          prunedKeys.push(obj.key);
+        } catch (_) {}
+      }
+    }
+
+    return {
+      prunedCount: prunedKeys.length,
+      prunedKeys,
+    };
+  };
+
   return {
     chunkArray,
     cleanupMissingMessageFiles,
@@ -389,5 +558,6 @@ export function createMessageFileJobs({
     removeAllMessageUploads,
     computeExpiryIso,
     pruneOrphanRemoteObjects,
+    pruneOrphanAvatarObjects,
   };
 }

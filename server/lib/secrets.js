@@ -97,13 +97,18 @@ export async function ensureSystemSecrets({
     }
   }
 
-  async function resolveSecret(envKey, generator) {
+  async function resolveSecret(envKey, generator, { immutable = false } = {}) {
     let current = normalizeEnvSecret(process.env[envKey]);
     const fromDb = await getDbSecret(envKey);
 
     if (current) {
       process.env[envKey] = current;
       if (fromDb !== current) {
+        if (immutable && fromDb) {
+          throw new Error(
+            `[secrets] FATAL: ${envKey} from the environment does not match the value stored in the database. `,
+          );
+        }
         await saveDbSecret(envKey, current);
       }
       return current;
@@ -126,8 +131,10 @@ export async function ensureSystemSecrets({
     cryptoImpl.randomBytes(32).toString("base64url"),
   );
 
-  const storageKey = await resolveSecret("STORAGE_ENCRYPTION_KEY", () =>
-    cryptoImpl.randomBytes(32).toString("base64url"),
+  const storageKey = await resolveSecret(
+    "STORAGE_ENCRYPTION_KEY",
+    () => cryptoImpl.randomBytes(32).toString("base64url"),
+    { immutable: true },
   );
 
   const webhookSecret = await resolveSecret("WEBHOOK_SECRET", () =>
@@ -145,6 +152,15 @@ export async function ensureSystemSecrets({
     "mailto:admin@example.com";
 
   if (pubKey && privKey) {
+    if (
+      dbPubKey &&
+      dbPrivKey &&
+      (dbPubKey !== pubKey || dbPrivKey !== privKey)
+    ) {
+      throw new Error(
+        "[secrets] FATAL: VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY from the environment do not match the values stored in the database. ",
+      );
+    }
     process.env.VAPID_PUBLIC_KEY = pubKey;
     process.env.VAPID_PRIVATE_KEY = privKey;
     process.env.VAPID_SUBJECT = subject;
@@ -154,6 +170,11 @@ export async function ensureSystemSecrets({
       await saveDbSecret("VAPID_SUBJECT", subject);
     }
   } else if (dbPubKey && dbPrivKey) {
+    if (pubKey || privKey) {
+      console.warn(
+        "[secrets] Incomplete VAPID keypair in the environment (both VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY are required to override); using the database values.",
+      );
+    }
     pubKey = dbPubKey;
     privKey = dbPrivKey;
     if (dbSub) subject = dbSub;

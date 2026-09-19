@@ -82,6 +82,15 @@ export class LocalStorageProvider extends StorageProvider {
    * @param {string} fileKey
    * @returns {Promise<boolean>}
    */
+  async checkHealth() {
+    try {
+      await fs.promises.access(this.uploadDir, fs.constants.W_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async exists(fileKey) {
     const filePath = path.isAbsolute(fileKey)
       ? fileKey
@@ -125,5 +134,60 @@ export class LocalStorageProvider extends StorageProvider {
     await fs.promises.mkdir(path.dirname(dest), { recursive: true });
     await fs.promises.copyFile(filePath, dest);
     return { key: cleanKey };
+  }
+
+  /**
+   * List local files matching a prefix.
+   * @param {string} [prefix=""]
+   * @returns {Promise<Array<{ key: string, lastModified?: Date, size?: number }>>}
+   */
+  async listObjects(prefix = "") {
+    const cleanPrefix = String(prefix || "").replace(/^\//, "");
+    const targetDir = path.isAbsolute(cleanPrefix)
+      ? cleanPrefix
+      : path.join(this.uploadDir, cleanPrefix);
+
+    if (!fs.existsSync(targetDir)) {
+      return [];
+    }
+
+    const items = [];
+    const entries = await fs.promises.readdir(targetDir, { withFileTypes: true, recursive: true });
+    for (const entry of entries) {
+      if (entry.isFile()) {
+        const fullPath = path.join(entry.parentPath || targetDir, entry.name);
+        const rel = path.relative(this.uploadDir, fullPath).replace(/\\/g, "/");
+        const stat = await fs.promises.stat(fullPath).catch(() => null);
+        items.push({
+          key: rel,
+          lastModified: stat?.mtime || null,
+          size: stat?.size || 0,
+        });
+      }
+    }
+    return items;
+  }
+
+  /**
+   * Copy one stored file to a new key within the same uploadDir.
+   * @param {string} srcKey
+   * @param {string} destKey
+   * @returns {Promise<{key: string}>}
+   */
+  async copyFile(srcKey, destKey) {
+    const cleanSrc = String(srcKey || "").replace(/^\//, "");
+    const cleanDest = String(destKey || "").replace(/^\//, "");
+    if (!cleanSrc || !cleanDest) {
+      throw new Error("copyFile requires srcKey and destKey.");
+    }
+    const srcPath = path.isAbsolute(cleanSrc)
+      ? cleanSrc
+      : path.join(this.uploadDir, cleanSrc);
+    const destPath = path.isAbsolute(cleanDest)
+      ? cleanDest
+      : path.join(this.uploadDir, cleanDest);
+    await fs.promises.mkdir(path.dirname(destPath), { recursive: true });
+    await fs.promises.copyFile(srcPath, destPath);
+    return { key: cleanDest };
   }
 }

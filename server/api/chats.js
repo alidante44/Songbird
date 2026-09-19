@@ -1,3 +1,4 @@
+import path from "node:path";
 import { createInviteToken } from "../lib/inviteTokens.js";
 import { createMembershipService } from "../lib/services/membershipService.js";
 import { createDeletionService } from "../lib/services/deletionService.js";
@@ -42,6 +43,7 @@ function registerChatRoutes(app, deps) {
     listMessageFilesByMessageIds,
     listUsers,
     removeAvatarByUrl,
+    removePendingPresignedUploads,
     removeStoredFileNames,
     clearGroupMemberRemoved,
     bcrypt,
@@ -61,6 +63,7 @@ function registerChatRoutes(app, deps) {
     updateChannelChat,
     unhideChat,
     uploadAvatar,
+    storeAvatarFile = deps.storeAvatarFile,
     setChatMemberRole,
     getSetting,
     REMOTE_CHANNELS,
@@ -88,7 +91,7 @@ function registerChatRoutes(app, deps) {
   const deletionService = createDeletionService({
     deleteChatById,
     deleteUserById,
-    findChatById: (id) => getChatById(id) || getGroupChat(id) || getChannelChat(id),
+    findChatById: (id) => findChatById(id),
     findUserById,
     listChatMembers,
     listChatsForUser,
@@ -688,27 +691,29 @@ function registerChatRoutes(app, deps) {
     if (remoteChannelConfig.shouldSave) {
       let remoteSource = null;
       try {
-        remoteSource = upsertRemoteChannelSource({
-          chatId,
-          provider: remoteChannelConfig.provider,
-          sourceRaw: remoteChannelConfig.sourceRaw,
-          sourceChatId: remoteChannelConfig.sourceChatId,
-          sourceUsername: remoteChannelConfig.sourceUsername,
-          sourceUrl: remoteChannelConfig.sourceUrl || "",
-          syncMetadata: remoteChannelConfig.syncMetadata,
-          streamMedia: remoteChannelConfig.streamMedia,
-          enabled: remoteChannelConfig.enabled,
-        });
+        remoteSource = await resolveMaybePromise(
+          upsertRemoteChannelSource({
+            chatId,
+            provider: remoteChannelConfig.provider,
+            sourceRaw: remoteChannelConfig.sourceRaw,
+            sourceChatId: remoteChannelConfig.sourceChatId,
+            sourceUsername: remoteChannelConfig.sourceUsername,
+            sourceUrl: remoteChannelConfig.sourceUrl || "",
+            syncMetadata: remoteChannelConfig.syncMetadata,
+            streamMedia: remoteChannelConfig.streamMedia,
+            enabled: remoteChannelConfig.enabled,
+          }),
+        );
         if (
           remoteChannelConfig.enabled &&
           remoteChannelConfig.provider === "telegram" &&
           remoteChannelConfig.syncMetadata &&
           typeof remoteChannelManager?.syncSourceMetadata === "function"
         ) {
-          await remoteChannelManager.syncSourceMetadata(remoteSource.id);
+          await remoteChannelManager.syncSourceMetadata(remoteSource?.id);
         }
       } catch (error) {
-        deleteChatById(chatId);
+        await resolveMaybePromise(deleteChatById(chatId));
         return res.status(400).json({
           error: remoteChannelConfig.syncMetadata
             ? `Unable to sync Telegram metadata: ${
@@ -1246,6 +1251,9 @@ function registerChatRoutes(app, deps) {
         if (Array.isArray(result.storedFilesToRemove) && result.storedFilesToRemove.length > 0) {
           removeStoredFileNames(result.storedFilesToRemove);
         }
+        if (result.avatarFileToRemove) {
+          removeAvatarByUrl(result.avatarFileToRemove);
+        }
         return res.json({ ok: true, deleted: true });
       }
       const nextOwner = crypto?.randomInt
@@ -1325,6 +1333,9 @@ function registerChatRoutes(app, deps) {
     const result = await deletionService.deleteChat({ chatId });
     if (Array.isArray(result.storedFilesToRemove) && result.storedFilesToRemove.length > 0) {
       removeStoredFileNames(result.storedFilesToRemove);
+    }
+    if (result.avatarFileToRemove) {
+      removeAvatarByUrl(result.avatarFileToRemove);
     }
     result.sseEvents.forEach((ev) => {
       try {
@@ -1424,25 +1435,18 @@ function registerChatRoutes(app, deps) {
         removeUploadedFiles(file ? [file] : [], avatarUploadRootDir);
         return;
       }
-      if (!file) {
+      if (!file && !req.body?.avatarUrl) {
         return res.status(400).json({ error: "Avatar file is required." });
-      }
-      const avatarMime = String(file.mimetype || "").toLowerCase();
-      if (!ALLOWED_AVATAR_MIME_TYPES.has(avatarMime)) {
-        removeUploadedFiles([file], avatarUploadRootDir);
-        return res
-          .status(400)
-          .json({ error: "Avatar must be a JPEG, PNG, GIF, WEBP, or BMP image." });
       }
 
       const chat = await resolveMaybePromise(findChatById(chatId));
       if (!chat || (chat.type !== "group" && chat.type !== "channel")) {
-        removeUploadedFiles([file], avatarUploadRootDir);
+        removeUploadedFiles(file ? [file] : [], avatarUploadRootDir);
         return res.status(404).json({ error: "Chat not found." });
       }
       const user = await resolveMaybePromise(findUserByUsername(String(username || "").toLowerCase()));
       if (!user) {
-        removeUploadedFiles([file], avatarUploadRootDir);
+        removeUploadedFiles(file ? [file] : [], avatarUploadRootDir);
         return res.status(404).json({ error: "User not found." });
       }
       const rawMembers = listChatMembers(chatId);
@@ -1454,20 +1458,51 @@ function registerChatRoutes(app, deps) {
           String(member.role || "").toLowerCase() === "owner",
       );
       if (!isOwner) {
-        removeUploadedFiles([file], avatarUploadRootDir);
+        removeUploadedFiles(file ? [file] : [], avatarUploadRootDir);
         return res
           .status(403)
           .json({ error: `Only ${label} owner can update ${label} avatar.` });
       }
 
-      const avatarUrl = `/api/uploads/avatars/${file.filename}`;
-      try {
-        storageEncryption.encryptFileInPlace(file.path);
-      } catch {
-        removeUploadedFiles([file], avatarUploadRootDir);
-        return res
-          .status(500)
-          .json({ error: "Unable to store avatar securely." });
+      const directAvatarUrl = String(req.body?.avatarUrl || "").trim();
+      let avatarUrl = "";
+
+      if (directAvatarUrl) {
+        const fileName = path.basename(directAvatarUrl);
+        if (
+          (!directAvatarUrl.startsWith("/api/uploads/avatars/") &&
+            !directAvatarUrl.startsWith("/uploads/avatars/")) ||
+          !fileName.startsWith("avatar-") ||
+          fileName.includes("..")
+        ) {
+          return res.status(400).json({ error: "Invalid avatar URL." });
+        }
+        avatarUrl = directAvatarUrl.startsWith("/uploads/")
+          ? `/api${directAvatarUrl}`
+          : directAvatarUrl;
+      } else {
+        const avatarMime = String(file.mimetype || "").toLowerCase();
+        if (!ALLOWED_AVATAR_MIME_TYPES.has(avatarMime)) {
+          removeUploadedFiles([file], avatarUploadRootDir);
+          return res
+            .status(400)
+            .json({ error: "Avatar must be a JPEG, PNG, GIF, WEBP, or BMP image." });
+        }
+
+        try {
+          if (typeof storeAvatarFile === "function") {
+            const stored = await storeAvatarFile(file);
+            avatarUrl = stored.avatarUrl;
+          } else {
+            avatarUrl = `/api/uploads/avatars/${file.filename}`;
+            storageEncryption?.encryptFileInPlace?.(file.path);
+          }
+        } catch {
+          removeUploadedFiles([file], avatarUploadRootDir);
+          return res
+            .status(500)
+            .json({ error: "Unable to store avatar securely." });
+        }
       }
 
       if (String(chat.group_avatar_url || "").trim() && chat.group_avatar_url !== avatarUrl) {
@@ -1484,6 +1519,14 @@ function registerChatRoutes(app, deps) {
           groupAvatarUrl: avatarUrl,
         }),
       );
+      const fileName = path.basename(avatarUrl);
+      if (fileName && typeof removePendingPresignedUploads === "function") {
+        removePendingPresignedUploads([
+          `uploads/avatars/${fileName}`,
+          // Legacy key from before uploads/avatars unification.
+          `avatars/${fileName}`,
+        ]);
+      }
       emitChatListChangedToChatParticipants(chatId);
 
       return res.json({

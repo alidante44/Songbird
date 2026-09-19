@@ -54,6 +54,7 @@ nano .env
 | `STORAGE_AUTO_CORS` | `boolean` | `false` | Configure bucket CORS for browser uploads automatically. |
 | `STORAGE_EXPIRES_IN` | `integer` | `3600` | Expiration time in seconds for presigned URLs. |
 | `STORAGE_FORCE_PATH_STYLE` | `boolean` | `true` | Enable path-style URL syntax (`true` recommended for MinIO, R2, ArvanCloud, etc.). |
+| `STORAGE_PROXY_URL` | `string` | `""` | Optional HTTP/HTTPS proxy URL for object storage requests. |
 | `WORKER_URL` | `string` | `""` | External media processing worker base URL for HTTP push transcoding (e.g. `https://worker.example.com`). |
 | `WORKER_PORT` | `integer` | `8080` | Port for the standalone Media Worker service (`worker/`). Songbird uses this port to construct the default local Media Worker URL (`http://127.0.0.1:8080`) when `WORKER_URL` is omitted. |
 | `STORAGE_PROCESSING_MODE` | `string` | `auto` | Media processing workflow mode (`auto`, `local`, `remote`). |
@@ -96,10 +97,10 @@ nano .env
 | `CHAT_VOICE_WAVEFORM_MAX_DECODE_SECONDS` | `integer` | `480` | Max audio duration (seconds) allowed for client-side waveform decode. |
 | `NICKNAME_MAX_CHARS` | `integer` | `24` | Max nickname length for users and groups. (`NICKNAME_MAX` is supported as a legacy fallback.) |
 | `USERNAME_MAX_CHARS` | `integer` | `16` | Max username length for users and groups. (`USERNAME_MAX` is supported as a legacy fallback.) |
-| `STORAGE_ENCRYPTION_KEY` | `string` | *(Auto-generated)* | Persistent encryption-at-rest key. Changing this value without first decrypting old data will make previously encrypted content unreadable. |
+| `STORAGE_ENCRYPTION_KEY` | `string` | *(Auto-generated)* | Persistent encryption-at-rest key. Once stored in the database, a different env value is a fatal startup error. Rotate only by re-encrypting old data first. |
 | `ADMIN_API_TOKEN` | `string` | *(Auto-generated)* | Authentication token for local admin API endpoints. |
-| `VAPID_PUBLIC_KEY` | `string` | *(Auto-generated)* | Web Push public key (required for push notifications). |
-| `VAPID_PRIVATE_KEY` | `string` | *(Auto-generated)* | Web Push private key (required for push notifications). |
+| `VAPID_PUBLIC_KEY` | `string` | *(Auto-generated)* | Web Push public key (required for push notifications). A different env value after the first run is a fatal startup error. |
+| `VAPID_PRIVATE_KEY` | `string` | *(Auto-generated)* | Web Push private key (required for push notifications). A different env value after the first run is a fatal startup error. |
 | `VAPID_SUBJECT` | `string` | *(Auto-generated)* | Contact for VAPID (email or URL). Used by push providers. |
 | `PUSH_PROXY_URL` | `string` | `""` | Proxy URL for push notification delivery. Use when your server cannot directly reach push service endpoints. |
 

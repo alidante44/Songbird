@@ -54,6 +54,7 @@ nano .env
 | `STORAGE_AUTO_CORS` | `boolean` | `false` | تنظیم خودکار CORS باکت برای آپلود مرورگر. |
 | `STORAGE_EXPIRES_IN` | `integer` | `3600` | زمان انقضا به ثانیه برای Presigned URLها. |
 | `STORAGE_FORCE_PATH_STYLE` | `boolean` | `true` | فعال سازی ساختار URL به روش path-style (مقدار `true` برای MinIO، R2، ArvanCloud توصیه میشود). |
+| `STORAGE_PROXY_URL` | `string` | `""` | آدرس پروکسی اختیاری برای درخواست های فضای ذخیره سازی ابری. |
 | `WORKER_URL` | `string` | `""` | آدرس پایه worker خارجی پردازش رسانه برای ترنسکد با HTTP push (مانند `https://worker.example.com`). |
 | `WORKER_PORT` | `integer` | `8080` | پورت سرویس Media Worker مستقل (`worker/`). در صورت خالی بودن `WORKER_URL`، پلتفرم Songbird از این مقدار برای ساخت آدرس پیشفرض ورکر محلی (`http://127.0.0.1:8080`) استفاده میکند. |
 | `STORAGE_PROCESSING_MODE` | `string` | `auto` | حالت گردش کار پردازش مدیا (`auto`، `local`، `remote`). |
@@ -96,10 +97,10 @@ nano .env
 | `CHAT_VOICE_WAVEFORM_MAX_DECODE_SECONDS` | `integer` | `480` | حداکثر مدت‌زمان صوت (ثانیه) مجاز برای رمزگشایی شکل‌موج سمت‌کلاینت. |
 | `NICKNAME_MAX_CHARS` | `integer` | `24` | حداکثر طول نام مستعار برای کاربران و گروه‌ها. (`NICKNAME_MAX` به‌عنوان جایگزین قدیمی پشتیبانی می‌شود.) |
 | `USERNAME_MAX_CHARS` | `integer` | `16` | حداکثر طول نام کاربری برای کاربران و گروه‌ها. (`USERNAME_MAX` به‌عنوان جایگزین قدیمی پشتیبانی می‌شود.) |
-| `STORAGE_ENCRYPTION_KEY` | `string` | *(تولید خودکار)* | کلید پایدار رمزنگاری در حالت سکون. تغییر این مقدار بدون رمزگشایی اولیه داده‌های قدیمی، محتوای قبلاً رمزنگاری‌شده را غیرقابل‌خواندن می‌کند. |
+| `STORAGE_ENCRYPTION_KEY` | `string` | *(تولید خودکار)* | کلید پایدار رمزنگاری در حالت سکون. پس از ذخیره در پایگاه‌داده، مقدار متفاوت در محیط باعث خطای مهلک در راه‌اندازی می‌شود. چرخش کلید فقط با رمزنگاری مجدد داده‌های قدیمی انجام شود. |
 | `ADMIN_API_TOKEN` | `string` | *(تولید خودکار)* | توکن احراز هویت برای نقاط پایانی API مدیریت محلی. |
-| `VAPID_PUBLIC_KEY` | `string` | *(تولید خودکار)* | کلید عمومی Web Push (برای Push notifications موردنیاز است). |
-| `VAPID_PRIVATE_KEY` | `string` | *(تولید خودکار)* | کلید خصوصی Web Push (برای Push notifications موردنیاز است). |
+| `VAPID_PUBLIC_KEY` | `string` | *(تولید خودکار)* | کلید عمومی Web Push (برای Push notifications موردنیاز است). مقدار متفاوت در محیط پس از اولین اجرا باعث خطای مهلک در راه‌اندازی می‌شود. |
+| `VAPID_PRIVATE_KEY` | `string` | *(تولید خودکار)* | کلید خصوصی Web Push (برای Push notifications موردنیاز است). مقدار متفاوت در محیط پس از اولین اجرا باعث خطای مهلک در راه اندازی می‌شود. |
 | `VAPID_SUBJECT` | `string` | *(تولید خودکار)* | مخاطب برای VAPID (ایمیل یا URL). توسط ارائه‌دهندگان push استفاده می‌شود. |
 | `PUSH_PROXY_URL` | `string` | `""` | نشانی پراکسی برای تحویل Push notification. زمانی استفاده کنید که سرور شما نمی‌تواند مستقیماً به نقاط پایانی سرویس‌های push دسترسی پیدا کند. |
 

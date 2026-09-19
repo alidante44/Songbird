@@ -71,6 +71,7 @@ Do not run individual scripts with `sudo node` or `sudo npm`. Those direct invoc
 | [`npm run db:file:delete`](#db-file-delete) | Delete uploaded message files and/or avatars. |
 | [`npm run db:message:generate`](#db-message-generate) | Generate random messages between two users. |
 | [`npm run remote:configure`](#remote-configure) | Configure Telegram credentials for Remote Channel. |
+| [`npm run storage:migrate`](#storage-migrate) | Migrate object storage keys to unified layout and rewrite DB records. |
 
 
 ## Backup & restore
@@ -509,13 +510,33 @@ npm run remote:configure
 
 See [Remote Channel Setup](./Remote-Channel-Setup.md) for the complete guide, including how to obtain API credentials.
 
+## Object Storage
+
+### `storage:migrate`
+
+Migrates object-storage keys from the legacy root-level layout to the unified layout and updates database columns.
+
+| Flag | Shorthand | Description |
+|---|---|---|
+| `--dry-run` | | Preview legacy objects. |
+| `--yes` | `-y` | Skip interactive confirmation prompt. |
+| `--help` | `-h` | Display command help. |
+
+```bash
+npm run storage:migrate
+```
+
+:::warning Concurrency Guard
+`storage:migrate` refuses to run if the Songbird server process is actively running, preventing race conditions with live uploads. Stop the server before executing.
+:::
 
 ## Running commands via Docker
 
-Run any npm script inside the running container by prefixing with `--prefix /app/server`:
+To run database and maintenance commands inside a Docker container:
 
 ```bash
 docker compose exec songbird npm --prefix /app/server run db:backup
 docker compose exec songbird npm --prefix /app/server run db:migrate
 docker compose exec songbird npm --prefix /app/server run db:inspect
+docker compose exec songbird npm --prefix /app/server run storage:migrate -- -y
 ```

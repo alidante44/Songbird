@@ -4,6 +4,8 @@ import {
   parseServerDate,
   formatCompactCount,
   formatChatCardTimestamp,
+  formatDayLabel,
+  formatTime,
 } from "../../src/utils/chatFormat.js";
 
 describe("formatBytesAsMb", () => {
@@ -149,5 +151,22 @@ describe("formatChatCardTimestamp", () => {
   test("returns YY/MM/DD format for dates in a previous year", () => {
     const result = formatChatCardTimestamp("2020-06-15T00:00:00Z");
     expect(result).toMatch(/^\d{2}\/\d{2}\/\d{2}$/);
+  });
+});
+
+describe("invalid-date hardening", () => {
+  test("formatTime returns empty string instead of 'Invalid Date'", () => {
+    expect(formatTime("datetime('now')")).toBe("");
+    expect(formatTime("not-a-date")).toBe("");
+  });
+
+  test("formatDayLabel returns empty string instead of 'Invalid Date'", () => {
+    expect(formatDayLabel("datetime('now')")).toBe("");
+    expect(formatDayLabel("not-a-date")).toBe("");
+  });
+
+  test("formatTime still formats valid server timestamps", () => {
+    expect(formatTime("2024-06-15T10:30:00Z")).toMatch(/^\d{2}:\d{2}$/);
+    expect(formatTime("2024-06-15 10:30:00")).toMatch(/^\d{2}:\d{2}$/);
   });
 });

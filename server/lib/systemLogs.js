@@ -7,6 +7,7 @@ const serverDir = path.dirname(fileURLToPath(import.meta.url));
 const projectRootDir = path.resolve(serverDir, "..", "..");
 
 const SERVICE_NAME = process.env.SONGBIRD_SERVICE_NAME || "songbird.service";
+const WORKER_SERVICE_NAME = process.env.SONGBIRD_WORKER_SERVICE_NAME || "songbird-worker.service";
 
 // Candidate paths for each log source. The first readable one wins.
 const INSTALLER_LOG_CANDIDATES = [
@@ -100,42 +101,60 @@ export async function readNginxLog({ maxLines = 300 } = {}) {
   return { available: true, lines: result.lines, source: result.path };
 }
 
-// journalctl for the systemd service — async since it shells out.
-export function readServiceLog({ maxLines = 300 } = {}) {
+// journalctl for a systemd unit — async since it shells out.
+function readJournalUnitLog(unitName, unavailableReason, { maxLines = 300 } = {}) {
   return new Promise((resolve) => {
     // First attempt: run journalctl directly (works if process user is in
     // the systemd-journal group or has CAP_ADMSYS_ADMIN).
     execFile(
       "journalctl",
-      ["-u", SERVICE_NAME, "-n", String(maxLines), "--no-pager", "--output", "short-iso"],
+      ["-u", unitName, "-n", String(maxLines), "--no-pager", "--output", "short-iso"],
       { timeout: 5000, maxBuffer: 4 * 1024 * 1024 },
       (err, stdout) => {
         if (!err) {
           const lines = String(stdout || "").split("\n").filter((l) => l.length > 0);
-          return resolve({ available: true, lines, source: SERVICE_NAME });
+          return resolve({ available: true, lines, source: unitName });
         }
 
         // Second attempt: sudo -n journalctl (works when a passwordless sudoers
         // rule grants the service user access to journalctl).
         execFile(
           "sudo",
-          ["-n", "journalctl", "-u", SERVICE_NAME, "-n", String(maxLines), "--no-pager", "--output", "short-iso"],
+          ["-n", "journalctl", "-u", unitName, "-n", String(maxLines), "--no-pager", "--output", "short-iso"],
           { timeout: 5000, maxBuffer: 4 * 1024 * 1024 },
           (err2, stdout2) => {
             if (!err2) {
               const lines = String(stdout2 || "").split("\n").filter((l) => l.length > 0);
-              return resolve({ available: true, lines, source: SERVICE_NAME });
+              return resolve({ available: true, lines, source: unitName });
             }
             resolve({
               available: false,
               lines: [],
-              reason: `Service logs not accessible (journalctl unavailable or insufficient permissions). ${PERMISSION_HINT}`,
+              reason: `${unavailableReason} ${PERMISSION_HINT}`,
             });
           },
         );
       },
     );
   });
+}
+
+// journalctl for the systemd service — async since it shells out.
+export function readServiceLog({ maxLines = 300 } = {}) {
+  return readJournalUnitLog(
+    SERVICE_NAME,
+    "Service logs not accessible (journalctl unavailable or insufficient permissions).",
+    { maxLines },
+  );
+}
+
+// journalctl for the media worker systemd service.
+export function readWorkerLog({ maxLines = 300 } = {}) {
+  return readJournalUnitLog(
+    WORKER_SERVICE_NAME,
+    "Worker logs not accessible (journalctl unavailable or insufficient permissions).",
+    { maxLines },
+  );
 }
 
 /**
@@ -177,20 +196,24 @@ export async function probeLogSources() {
   }
 
   // Service log: journalctl only works on systemd hosts, not in Docker.
-  let serviceAvailable = false;
+  let journalAvailable = false;
   if (!isDocker) {
-    serviceAvailable = await new Promise((resolve) => {
+    journalAvailable = await new Promise((resolve) => {
       execFile("journalctl", ["--version"], { timeout: 2000 }, (err) => {
         if (!err) return resolve(true);
         execFile("sudo", ["-n", "journalctl", "--version"], { timeout: 2000 }, (err2) => resolve(!err2));
       });
     });
   }
+  const serviceAvailable = journalAvailable;
+  const processingMode = String(process.env.STORAGE_PROCESSING_MODE || "auto").toLowerCase();
+  const workerAvailable = journalAvailable && processingMode !== "remote";
 
   return {
     admin:     { available: true },
     installer: { available: installerAvailable },
     service:   { available: serviceAvailable },
+    worker:    { available: workerAvailable },
     nginx:     { available: nginxAvailable },
   };
 }

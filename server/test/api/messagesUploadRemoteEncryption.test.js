@@ -168,7 +168,7 @@ describe("POST /api/messages/upload with remote storage + file encryption", () =
     expect(uploadBufferSpy).toHaveBeenCalledTimes(1);
 
     const [fileKey, body, contentType] = uploadBufferSpy.mock.calls[0];
-    expect(fileKey).toBe(`uploads/${storedName}`);
+    expect(fileKey).toBe(`uploads/messages/${storedName}`);
     expect(contentType).toBe("image/png");
 
     expect(Buffer.isBuffer(body)).toBe(true);

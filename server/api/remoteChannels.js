@@ -7,6 +7,8 @@ function registerRemoteChannelRoutes(app, deps) {
     REMOTE_CHANNELS,
     findChatById,
     findUserByUsername,
+    getChatMemberRole,
+    emitChatEvent,
     getRemoteChannelQueueSummary,
     getRemoteChannelSourceByChatId,
     isMember,
@@ -19,6 +21,35 @@ function registerRemoteChannelRoutes(app, deps) {
     updateRemoteChannelSourcePaused,
     upsertRemoteChannelSource,
   } = deps;
+
+  const resolveOwner = async (chatId, userId) => {
+    if (typeof getChatMemberRole === "function") {
+      const raw = getChatMemberRole(chatId, userId);
+      const role = raw && typeof raw.then === "function" ? await raw : raw;
+      return String(role || "").toLowerCase() === "owner";
+    }
+    const rawMembers = listChatMembers(chatId);
+    const members = Array.isArray(rawMembers) ? rawMembers : (await rawMembers) || [];
+    return members.some(
+      (member) =>
+        member.id === userId &&
+        String(member.role || "").toLowerCase() === "owner",
+    );
+  };
+
+  // Push queue changes to open profile modals (they refresh on this event).
+  const notifyQueueChanged = (chatIdValue, sourceId) => {
+    if (!chatIdValue || !sourceId) return;
+    try {
+      emitChatEvent?.(chatIdValue, {
+        type: "remote_channel_queue",
+        chatId: chatIdValue,
+        sourceId: Number(sourceId),
+      });
+    } catch {
+      // Realtime notify must never break the API response.
+    }
+  };
 
   // Telegram requires API credentials; Songbird just needs the feature enabled.
   const isTelegramAvailable = () =>
@@ -64,13 +95,7 @@ function registerRemoteChannelRoutes(app, deps) {
       return null;
     }
 
-    const rawMembers = listChatMembers(chatId);
-    const members = Array.isArray(rawMembers) ? rawMembers : (await rawMembers) || [];
-    const isOwner = members.some(
-      (member) =>
-        member.id === user.id &&
-        String(member.role || "").toLowerCase() === "owner",
-    );
+    const isOwner = await resolveOwner(chatId, user.id);
 
     if (!isOwner) {
       res
@@ -82,11 +107,37 @@ function registerRemoteChannelRoutes(app, deps) {
     return { chat, chatId, user };
   };
 
+  // Short-TTL cache for the queue summary.
+  const queueSummaryCache = new Map(); // sourceId -> { at, summary }
+  const QUEUE_SUMMARY_TTL_MS = 5000;
+
+  const getCachedQueueSummary = async (sourceId) => {
+    const key = Number(sourceId || 0);
+    if (!key) return null;
+    const now = Date.now();
+    const hit = queueSummaryCache.get(key);
+    if (hit && now - hit.at < QUEUE_SUMMARY_TTL_MS) return hit.summary;
+    // Single-flight: concurrent misses share one query.
+    if (hit?.pending) return hit.pending;
+    const pending = (async () => {
+      const raw = getRemoteChannelQueueSummary(key);
+      return raw && typeof raw.then === "function" ? await raw : raw;
+    })();
+    queueSummaryCache.set(key, { at: now, summary: null, pending });
+    try {
+      const summary = await pending;
+      queueSummaryCache.set(key, { at: Date.now(), summary });
+      return summary;
+    } catch {
+      queueSummaryCache.delete(key);
+      return null;
+    }
+  };
+
   const serializeSource = async (source) => {
     if (!source?.id) return null;
 
-    const rawQueue = getRemoteChannelQueueSummary(source.id);
-    const queue = rawQueue && typeof rawQueue.then === "function" ? await rawQueue : rawQueue;
+    const queue = await getCachedQueueSummary(source.id);
 
     return {
       id: Number(source.id),
@@ -139,13 +190,7 @@ function registerRemoteChannelRoutes(app, deps) {
       return res.status(403).json({ error: "Not a member of this channel." });
     }
 
-    const rawMembers = listChatMembers(chatId);
-    const members = Array.isArray(rawMembers) ? rawMembers : (await rawMembers) || [];
-    const isOwner = members.some(
-      (member) =>
-        member.id === user.id &&
-        String(member.role || "").toLowerCase() === "owner",
-    );
+    const isOwner = await resolveOwner(chatId, user.id);
 
     const rawSource = getRemoteChannelSourceByChatId(chatId);
     const source = rawSource && typeof rawSource.then === "function" ? await rawSource : rawSource;
@@ -163,6 +208,31 @@ function registerRemoteChannelRoutes(app, deps) {
       proxyConfigured: Boolean(REMOTE_CHANNELS?.proxyConfigured),
       source: serialized,
     });
+  });
+
+  app.get("/api/chats/:chatId/remote-channel/queue", validateUuidParams('chatId'), async (req, res) => {
+    const session = await requireSession(req, res);
+    if (!session) return;
+    const chatId = req.params.chatId;
+    const username = String(req.query?.username || session.username || "").trim();
+    if (!chatId || !username) {
+      return res.status(400).json({ error: "Channel id and username are required." });
+    }
+    if (!requireSessionUsernameMatch(res, session, username)) return;
+    const rawUser = findUserByUsername(username.toLowerCase());
+    const user = rawUser && typeof rawUser.then === "function" ? await rawUser : rawUser;
+    if (!user) return res.status(404).json({ error: "User not found." });
+    const rawIsMem = isMember(chatId, user.id);
+    const isMem = typeof rawIsMem?.then === "function" ? await rawIsMem : rawIsMem;
+    if (!isMem) return res.status(403).json({ error: "Not a member of this channel." });
+    if (!(await resolveOwner(chatId, user.id))) {
+      return res.status(403).json({ error: "Only channel owner can view Remote Channel queue." });
+    }
+    const rawSource = getRemoteChannelSourceByChatId(chatId);
+    const source = rawSource && typeof rawSource.then === "function" ? await rawSource : rawSource;
+    if (!source?.id) return res.json({ queue: null });
+    const queue = await getCachedQueueSummary(source.id);
+    return res.json({ queue: queue || null });
   });
 
   app.put("/api/chats/:chatId/remote-channel", validateUuidParams('chatId'), async (req, res) => {
@@ -241,7 +311,7 @@ function registerRemoteChannelRoutes(app, deps) {
       }
     }
 
-    let source = upsertRemoteChannelSource({
+    const upsertedRaw = upsertRemoteChannelSource({
       chatId: context.chatId,
       provider,
       sourceRaw: normalized.sourceRaw,
@@ -252,6 +322,12 @@ function registerRemoteChannelRoutes(app, deps) {
       streamMedia,
       enabled,
     });
+    // The DB driver is async under Postgres — resolve before reading `.id`
+    // (otherwise the id is undefined and the metadata sync queries `NaN`).
+    const source =
+      upsertedRaw && typeof upsertedRaw.then === "function"
+        ? await upsertedRaw
+        : upsertedRaw;
 
     if (
       enabled &&
@@ -259,7 +335,7 @@ function registerRemoteChannelRoutes(app, deps) {
       typeof remoteChannelManager?.syncSourceMetadata === "function"
     ) {
       // Run metadata sync in the background — works for both Telegram and Songbird.
-      const sourceId = source.id;
+      const sourceId = source?.id;
       remoteChannelManager.syncSourceMetadata(sourceId).catch(() => {
         // Errors are recorded on the source record by syncSourceMetadata itself.
       });
@@ -284,6 +360,7 @@ function registerRemoteChannelRoutes(app, deps) {
     }
 
     await updateRemoteChannelSourcePaused(source.id, true);
+    notifyQueueChanged(context.chatId, source.id);
 
     return res.json({
       ok: true,
@@ -303,6 +380,7 @@ function registerRemoteChannelRoutes(app, deps) {
     }
 
     await updateRemoteChannelSourcePaused(source.id, false);
+    notifyQueueChanged(context.chatId, source.id);
 
     return res.json({
       ok: true,
@@ -327,6 +405,7 @@ function registerRemoteChannelRoutes(app, deps) {
       typeof remoteChannelManager?.abortQueueItem === "function"
         ? await remoteChannelManager.abortQueueItem(source.id)
         : await skipCurrentRemoteChannelQueueItem(source.id);
+    notifyQueueChanged(context.chatId, source.id);
 
     return res.json({
       ok: true,
@@ -352,6 +431,7 @@ function registerRemoteChannelRoutes(app, deps) {
       typeof remoteChannelManager?.abortAllQueueItems === "function"
         ? await remoteChannelManager.abortAllQueueItems(source.id)
         : await skipAllRemoteChannelQueueItems(source.id);
+    notifyQueueChanged(context.chatId, source.id);
 
     return res.json({
       ok: true,

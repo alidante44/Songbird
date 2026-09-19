@@ -1,6 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
+import http from "node:http";
+import https from "node:https";
 import { pipeline } from "node:stream/promises";
+import { HttpsProxyAgent } from "https-proxy-agent";
+import { NodeHttpHandler } from "@smithy/node-http-handler";
 import {
   S3Client,
   PutObjectCommand,
@@ -9,6 +13,8 @@ import {
   PutBucketCorsCommand,
   DeleteObjectCommand,
   HeadObjectCommand,
+  ListObjectsV2Command,
+  CopyObjectCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { StorageProvider } from "./StorageProvider.js";
@@ -44,6 +50,25 @@ export class RemoteStorageProvider extends StorageProvider {
         ? String(forcePathStyleVal) === "true" || forcePathStyleVal === true
         : true;
 
+    const proxyUrl =
+      config.proxyUrl ||
+      config.STORAGE_PROXY_URL ||
+      process.env.STORAGE_PROXY_URL ||
+      process.env.HTTPS_PROXY ||
+      process.env.ALL_PROXY ||
+      process.env.HTTP_PROXY ||
+      null;
+
+    this.proxyUrl = proxyUrl;
+    this.proxyAgent = null;
+    if (proxyUrl) {
+      try {
+        this.proxyAgent = new HttpsProxyAgent(proxyUrl);
+      } catch (_) {
+        this.proxyAgent = null;
+      }
+    }
+
     if (config.s3Client) {
       this.client = config.s3Client;
     } else {
@@ -58,8 +83,49 @@ export class RemoteStorageProvider extends StorageProvider {
       if (this.endpoint) {
         clientConfig.endpoint = this.endpoint;
       }
+      if (this.proxyAgent) {
+        clientConfig.requestHandler = new NodeHttpHandler({
+          httpAgent: this.proxyAgent,
+          httpsAgent: this.proxyAgent,
+        });
+      }
       this.client = new S3Client(clientConfig);
     }
+  }
+
+  async _sendPresignedRequest(url, method = "GET", body = null, headers = {}) {
+    return new Promise((resolve, reject) => {
+      const parsed = new URL(url);
+      const isHttps = parsed.protocol === "https:";
+      const transport = isHttps ? https : http;
+      const opts = {
+        method,
+        headers: { ...headers },
+      };
+      if (this.proxyAgent) {
+        opts.agent = this.proxyAgent;
+      }
+      const req = transport.request(url, opts, (res) => {
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => {
+          const resBody = Buffer.concat(chunks);
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            resolve({ statusCode: res.statusCode, body: resBody });
+          } else {
+            const err = new Error(`Request to ${url} failed with status ${res.statusCode}`);
+            err.statusCode = res.statusCode;
+            err.body = resBody;
+            reject(err);
+          }
+        });
+      });
+      req.on("error", reject);
+      if (body) {
+        req.write(body);
+      }
+      req.end();
+    });
   }
 
   /**
@@ -117,8 +183,21 @@ export class RemoteStorageProvider extends StorageProvider {
       ContentLength: buf.length,
       ContentType: contentType,
     });
-    await this.client.send(command);
-    return { key: cleanKey };
+    try {
+      await this.client.send(command);
+      return { key: cleanKey };
+    } catch (err) {
+      try {
+        const signedUrl = await getSignedUrl(this.client, command, { expiresIn: 300 });
+        await this._sendPresignedRequest(signedUrl, "PUT", buf, {
+          "Content-Type": contentType,
+          "Content-Length": String(buf.length),
+        });
+        return { key: cleanKey };
+      } catch (_) {
+        throw err;
+      }
+    }
   }
 
   /**
@@ -181,12 +260,24 @@ export class RemoteStorageProvider extends StorageProvider {
    * @returns {Promise<boolean>}
    */
   async deleteFile(fileKey) {
+    const cleanKey = String(fileKey || "").replace(/^\//, "");
     const command = new DeleteObjectCommand({
       Bucket: this.bucket,
-      Key: fileKey,
+      Key: cleanKey,
     });
-    await this.client.send(command);
-    return true;
+    try {
+      await this.client.send(command);
+      return true;
+    } catch (err) {
+      // Fallback for providers requiring presigned query-based auth (e.g. Neon Storage)
+      try {
+        const signedUrl = await getSignedUrl(this.client, command, { expiresIn: 300 });
+        await this._sendPresignedRequest(signedUrl, "DELETE");
+        return true;
+      } catch (_) {
+        throw err;
+      }
+    }
   }
 
   /**
@@ -194,12 +285,18 @@ export class RemoteStorageProvider extends StorageProvider {
    * @param {string} fileKey
    * @returns {Promise<boolean>}
    */
+  async checkHealth() {
+    await this.exists("songbird-storage-health-probe");
+    return true;
+  }
+
   async exists(fileKey) {
+    const cleanKey = String(fileKey || "").replace(/^\//, "");
+    const command = new HeadObjectCommand({
+      Bucket: this.bucket,
+      Key: cleanKey,
+    });
     try {
-      const command = new HeadObjectCommand({
-        Bucket: this.bucket,
-        Key: fileKey,
-      });
       await this.client.send(command);
       return true;
     } catch (err) {
@@ -210,7 +307,14 @@ export class RemoteStorageProvider extends StorageProvider {
       ) {
         return false;
       }
-      throw err;
+      try {
+        const signedUrl = await getSignedUrl(this.client, command, { expiresIn: 300 });
+        await this._sendPresignedRequest(signedUrl, "HEAD");
+        return true;
+      } catch (fallbackErr) {
+        if (fallbackErr?.statusCode === 404) return false;
+        throw err;
+      }
     }
   }
 
@@ -252,5 +356,81 @@ export class RemoteStorageProvider extends StorageProvider {
     });
     await this.client.send(command);
     return { key: cleanKey };
+  }
+
+  /**
+   * List object keys matching a prefix.
+   * @param {string} [prefix=""]
+   * @returns {Promise<Array<{ key: string, lastModified?: Date, size?: number }>>}
+   */
+  async listObjects(prefix = "") {
+    const cleanPrefix = String(prefix || "").replace(/^\//, "");
+    let isTruncated = true;
+    let continuationToken;
+    const items = [];
+
+    while (isTruncated) {
+      const command = new ListObjectsV2Command({
+        Bucket: this.bucket,
+        Prefix: cleanPrefix,
+        ContinuationToken: continuationToken,
+      });
+      const res = await this.client.send(command);
+      const contents = res.Contents || [];
+      contents.forEach((entry) => {
+        if (entry?.Key) {
+          items.push({
+            key: entry.Key,
+            lastModified: entry.LastModified ? new Date(entry.LastModified) : null,
+            size: Number(entry.Size || 0),
+          });
+        }
+      });
+      isTruncated = Boolean(res.IsTruncated);
+      continuationToken = res.NextContinuationToken;
+    }
+
+    return items;
+  }
+
+  /**
+   * Server-side copy of one object to a new key (same bucket).
+   * Falls back to download + re-upload for providers where
+   * CopyObject is restricted.
+   * @param {string} srcKey
+   * @param {string} destKey
+   * @returns {Promise<{key: string}>}
+   */
+  async copyFile(srcKey, destKey) {
+    const cleanSrc = String(srcKey || "").replace(/^\//, "");
+    const cleanDest = String(destKey || "").replace(/^\//, "");
+    if (!cleanSrc || !cleanDest) {
+      throw new Error("copyFile requires srcKey and destKey.");
+    }
+    try {
+      await this.client.send(
+        new CopyObjectCommand({
+          Bucket: this.bucket,
+          CopySource: `${this.bucket}/${cleanSrc}`,
+          Key: cleanDest,
+        }),
+      );
+      return { key: cleanDest };
+    } catch (err) {
+      // Fallback: download bytes and re-upload (covers providers
+      // with restricted CopyObject support).
+      const getCommand = new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: cleanSrc,
+      });
+      const response = await this.client.send(getCommand);
+      const chunks = [];
+      for await (const chunk of response.Body) {
+        chunks.push(chunk);
+      }
+      const buf = Buffer.concat(chunks);
+      await this.uploadBuffer(cleanDest, buf, response.ContentType || "application/octet-stream");
+      return { key: cleanDest };
+    }
   }
 }

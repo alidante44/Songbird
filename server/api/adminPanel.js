@@ -3,11 +3,12 @@ import { createInviteToken } from "../lib/inviteTokens.js";
 import { validateUuidParams } from "../lib/uuidMiddleware.js";
 import { isValidUuid, generateUuid } from "../lib/uuidUtils.js";
 import { writeAdminLog, readAdminLog, clearAdminLog } from "../lib/adminLog.js";
-import { readInstallerLog, readNginxLog, readServiceLog, probeLogSources } from "../lib/systemLogs.js";
+import { readInstallerLog, readNginxLog, readServiceLog, readWorkerLog, probeLogSources } from "../lib/systemLogs.js";
 import { userEvents } from "../lib/workers/autoAddWorker.js";
 import { dbKnex } from "../db/knex.js";
 import os from "node:os";
 import crypto from "node:crypto";
+import path from "node:path";
 import multer from "multer";
 import { execFile } from "node:child_process";
 
@@ -115,11 +116,15 @@ function registerAdminPanelRoutes(app, deps) {
     broadcastAll,
     // avatar upload
     uploadAvatar,
+    storeAvatarFile = deps.storeAvatarFile,
     avatarUploadRootDir,
     ALLOWED_AVATAR_MIME_TYPES,
     storageEncryption,
     removeUploadedFiles,
     removeAvatarByUrl,
+    removePendingPresignedUploads = deps.removePendingPresignedUploads,
+    pruneOrphanRemoteObjects = deps.pruneOrphanRemoteObjects,
+    pruneOrphanAvatarObjects = deps.pruneOrphanAvatarObjects,
     // maintenance
     vacuumDatabase,
     reloadDatabase,
@@ -383,6 +388,103 @@ function registerAdminPanelRoutes(app, deps) {
     });
   });
 
+  // ─── Services — health overview ──────────────────────────────────────────
+  // Aggregates media worker, remote channel, storage and redis status so the
+  // admin Services tab can render one card per service without N round-trips.
+  // Short-TTL cached like stats to avoid probing the worker on every poll.
+  const SERVICES_CACHE_TTL_MS = 10_000;
+  let servicesCache = { data: null, fetchedAt: 0 };
+
+  app.get("/api/admin/services", async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const now = Date.now();
+    if (servicesCache.data && now - servicesCache.fetchedAt < SERVICES_CACHE_TTL_MS) {
+      return res.json(servicesCache.data);
+    }
+    const workerBaseUrl = String(
+      deps.workerUrl || deps.mediaWorkerUrl || process.env.WORKER_URL || process.env.MEDIA_WORKER_URL || "",
+    ).trim().replace(/\/+$/, "");
+    let mediaWorker = { configured: Boolean(workerBaseUrl), reachable: false, latencyMs: null };
+    if (workerBaseUrl) {
+      const started = Date.now();
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 3000);
+        const response = await fetch(`${workerBaseUrl}/health`, { signal: controller.signal });
+        clearTimeout(timer);
+        const body = await response.json().catch(() => ({}));
+        mediaWorker = {
+          configured: true,
+          reachable: Boolean(response.ok),
+          latencyMs: Date.now() - started,
+          queue: body?.queue || null,
+        };
+      } catch {
+        mediaWorker = { configured: true, reachable: false, latencyMs: Date.now() - started };
+      }
+    }
+    let remoteChannel = { enabled: false };
+    try {
+      const manager = deps.remoteChannelManager;
+      if (manager?.getHealth) {
+        remoteChannel = await resolveMaybePromise(manager.getHealth());
+      } else {
+        remoteChannel = { enabled: Boolean(manager?.isEnabled?.()) };
+      }
+    } catch {
+      remoteChannel = { enabled: false, error: "health probe failed" };
+    }
+    // Env-managed Telegram creds can't be edited from the panel.
+    remoteChannel.telegramManagedByEnv = [
+      "REMOTE_CHANNEL_TELEGRAM_API_ID",
+      "REMOTE_CHANNEL_TELEGRAM_API_HASH",
+      "REMOTE_CHANNEL_TELEGRAM_SESSION_STRING",
+    ].some((key) => {
+      const raw = process.env[key];
+      return raw !== undefined && raw !== null && String(raw).trim() !== "";
+    });
+    const storageProvider = deps.storageProvider;
+    const storageDriver =
+      storageProvider?.type || process.env.STORAGE_DRIVER || "local";
+
+    let storage = { driver: storageDriver, reachable: null, latencyMs: null };
+    if (typeof storageProvider?.checkHealth === "function") {
+      const started = Date.now();
+      const timeout = new Promise((_, reject) => {
+        const timer = setTimeout(
+          () => reject(new Error("storage health check timed out")),
+          3000,
+        );
+        if (typeof timer.unref === "function") timer.unref();
+      });
+      try {
+        await Promise.race([
+          Promise.resolve().then(() => storageProvider.checkHealth()),
+          timeout,
+        ]);
+        storage = {
+          driver: storageDriver,
+          reachable: true,
+          latencyMs: Date.now() - started,
+        };
+      } catch {
+        storage = {
+          driver: storageDriver,
+          reachable: false,
+          latencyMs: Date.now() - started,
+        };
+      }
+    }
+    const payload = {
+      mediaWorker,
+      remoteChannel,
+      storage,
+      fetchedAt: new Date().toISOString(),
+    };
+    servicesCache = { data: payload, fetchedAt: now };
+    return res.json(payload);
+  });
+
   // ─── Users — list ────────────────────────────────────────────────────────────
 
   app.get("/api/admin/users", async (req, res) => {
@@ -635,29 +737,66 @@ function registerAdminPanelRoutes(app, deps) {
     }
     const userId = req.params.id;
     const file = req.file;
-    if (!file) return res.status(400).json({ error: "Avatar file is required." });
-    const mime = String(file.mimetype || "").toLowerCase();
-    if (!ALLOWED_AVATAR_MIME_TYPES.has(mime)) {
-      removeUploadedFiles([file], avatarUploadRootDir);
-      return res.status(400).json({ error: "Avatar must be a JPEG, PNG, GIF, WEBP, or BMP image." });
+    if (!file && !req.body?.avatarUrl) {
+      return res.status(400).json({ error: "Avatar file is required." });
     }
+
     const user = await resolveMaybePromise(findUserById(userId));
     if (!user) {
-      removeUploadedFiles([file], avatarUploadRootDir);
+      removeUploadedFiles(file ? [file] : [], avatarUploadRootDir);
       return res.status(404).json({ error: "User not found." });
     }
-    const avatarUrl = `/api/uploads/avatars/${file.filename}`;
-    try {
-      storageEncryption.encryptFileInPlace(file.path);
-    } catch {
-      removeUploadedFiles([file], avatarUploadRootDir);
-      return res.status(500).json({ error: "Unable to store avatar securely." });
+
+    const directAvatarUrl = String(req.body?.avatarUrl || "").trim();
+    let avatarUrl = "";
+
+    if (directAvatarUrl) {
+      const fileName = path.basename(directAvatarUrl);
+      if (
+        (!directAvatarUrl.startsWith("/api/uploads/avatars/") &&
+          !directAvatarUrl.startsWith("/uploads/avatars/")) ||
+        !fileName.startsWith("avatar-") ||
+        fileName.includes("..")
+      ) {
+        return res.status(400).json({ error: "Invalid avatar URL." });
+      }
+      avatarUrl = directAvatarUrl.startsWith("/uploads/")
+        ? `/api${directAvatarUrl}`
+        : directAvatarUrl;
+    } else {
+      const mime = String(file.mimetype || "").toLowerCase();
+      if (!ALLOWED_AVATAR_MIME_TYPES.has(mime)) {
+        removeUploadedFiles([file], avatarUploadRootDir);
+        return res.status(400).json({ error: "Avatar must be a JPEG, PNG, GIF, WEBP, or BMP image." });
+      }
+
+      try {
+        if (typeof storeAvatarFile === "function") {
+          const stored = await storeAvatarFile(file);
+          avatarUrl = stored.avatarUrl;
+        } else {
+          avatarUrl = `/api/uploads/avatars/${file.filename}`;
+          storageEncryption?.encryptFileInPlace?.(file.path);
+        }
+      } catch {
+        removeUploadedFiles([file], avatarUploadRootDir);
+        return res.status(500).json({ error: "Unable to store avatar securely." });
+      }
     }
     if (String(user.avatar_url || "").trim() && user.avatar_url !== avatarUrl) {
       removeAvatarByUrl(user.avatar_url);
     }
     await resolveMaybePromise(callAdminRun(dbKnex("users").where("id", userId).update({ avatar_url: avatarUrl })));
     adminSave();
+    const fileName = path.basename(avatarUrl);
+    if (fileName && typeof removePendingPresignedUploads === "function") {
+      removePendingPresignedUploads([
+        `uploads/avatars/${fileName}`,
+        // Legacy key from before uploads/avatars unification.
+        `avatars/${fileName}`,
+      ]);
+    }
+    log(session, "user.edit", { targetType: "user", targetLabel: user.username, detail: "avatar" });
     res.json({ ok: true, avatarUrl });
   });
 
@@ -693,6 +832,7 @@ function registerAdminPanelRoutes(app, deps) {
       ? await rawDeletion
       : rawDeletion || {};
     if (Array.isArray(storedNames) && storedNames.length > 0) removeStoredFileNames(storedNames);
+    if (user?.avatar_url) removeAvatarByUrl(user.avatar_url);
     log(session, "user.delete", { targetType: "user", targetLabel: `@${user.username}` });
     res.json({ ok: true });
   });
@@ -892,26 +1032,49 @@ function registerAdminPanelRoutes(app, deps) {
     }
     const chatId = req.params.id;
     const file = req.file;
-    if (!file) return res.status(400).json({ error: "Avatar file is required." });
-
-    const mime = String(file.mimetype || "").toLowerCase();
-    if (!ALLOWED_AVATAR_MIME_TYPES.has(mime)) {
-      removeUploadedFiles([file], avatarUploadRootDir);
-      return res.status(400).json({ error: "Avatar must be a JPEG, PNG, GIF, WEBP, or BMP image." });
-    }
+    if (!file && !req.body?.avatarUrl) return res.status(400).json({ error: "Avatar file is required." });
 
     const chat = await resolveMaybePromise(findChatById(chatId));
     if (!chat || (chat.type !== "group" && chat.type !== "channel")) {
-      removeUploadedFiles([file], avatarUploadRootDir);
+      removeUploadedFiles(file ? [file] : [], avatarUploadRootDir);
       return res.status(404).json({ error: "Chat not found." });
     }
 
-    const avatarUrl = `/api/uploads/avatars/${file.filename}`;
-    try {
-      storageEncryption.encryptFileInPlace(file.path);
-    } catch {
-      removeUploadedFiles([file], avatarUploadRootDir);
-      return res.status(500).json({ error: "Unable to store avatar securely." });
+    const directAvatarUrl = String(req.body?.avatarUrl || "").trim();
+    let avatarUrl = "";
+
+    if (directAvatarUrl) {
+      const fileName = path.basename(directAvatarUrl);
+      if (
+        (!directAvatarUrl.startsWith("/api/uploads/avatars/") &&
+          !directAvatarUrl.startsWith("/uploads/avatars/")) ||
+        !fileName.startsWith("avatar-") ||
+        fileName.includes("..")
+      ) {
+        return res.status(400).json({ error: "Invalid avatar URL." });
+      }
+      avatarUrl = directAvatarUrl.startsWith("/uploads/")
+        ? `/api${directAvatarUrl}`
+        : directAvatarUrl;
+    } else {
+      const mime = String(file.mimetype || "").toLowerCase();
+      if (!ALLOWED_AVATAR_MIME_TYPES.has(mime)) {
+        removeUploadedFiles([file], avatarUploadRootDir);
+        return res.status(400).json({ error: "Avatar must be a JPEG, PNG, GIF, WEBP, or BMP image." });
+      }
+
+      try {
+        if (typeof storeAvatarFile === "function") {
+          const stored = await storeAvatarFile(file);
+          avatarUrl = stored.avatarUrl;
+        } else {
+          avatarUrl = `/api/uploads/avatars/${file.filename}`;
+          storageEncryption?.encryptFileInPlace?.(file.path);
+        }
+      } catch {
+        removeUploadedFiles([file], avatarUploadRootDir);
+        return res.status(500).json({ error: "Unable to store avatar securely." });
+      }
     }
 
     if (String(chat.group_avatar_url || "").trim() && chat.group_avatar_url !== avatarUrl) {
@@ -927,6 +1090,14 @@ function registerAdminPanelRoutes(app, deps) {
       groupAvatarUrl: avatarUrl,
     }));
     adminSave();
+    const fileName = path.basename(avatarUrl);
+    if (fileName && typeof removePendingPresignedUploads === "function") {
+      removePendingPresignedUploads([
+        `uploads/avatars/${fileName}`,
+        // Legacy key from before uploads/avatars unification.
+        `avatars/${fileName}`,
+      ]);
+    }
     emitChatEvent(chatId, { type: "chat_updated", chatId });
     log(session, "chat.edit", { targetType: "chat", targetLabel: chat.name || `Chat #${chatId}`, details: "avatar updated" });
     res.json({ ok: true, avatarUrl });
@@ -1065,6 +1236,7 @@ function registerAdminPanelRoutes(app, deps) {
     const deletion = await resolveMaybePromise(adminDeleteChat(chatId));
     const { storedNames } = deletion || {};
     if (Array.isArray(storedNames) && storedNames.length > 0) removeStoredFileNames(storedNames);
+    if (chat?.group_avatar_url) removeAvatarByUrl(chat.group_avatar_url);
     log(session, "chat.delete", { targetType: "chat", targetLabel: chat?.name || `Chat #${chatId}` });
     res.json({ ok: true });
   });
@@ -1118,6 +1290,12 @@ function registerAdminPanelRoutes(app, deps) {
     res.json(result);
   });
 
+  app.get("/api/admin/logs/worker", async (req, res) => {
+    if (!requireAdmin(req, res)) return;
+    const result = await readWorkerLog({ maxLines: 400 });
+    res.json(result);
+  });
+
   // ─── Maintenance ─────────────────────────────────────────────────────────────
 
   app.get("/api/admin/maintenance/info", (req, res) => {
@@ -1139,6 +1317,12 @@ function registerAdminPanelRoutes(app, deps) {
     try {
       if (dbConfig?.client === "postgres") await postgresMaintenance.vacuum();
       else await resolveMaybePromise(vacuumDatabase());
+      if (typeof pruneOrphanRemoteObjects === "function") {
+        await resolveMaybePromise(pruneOrphanRemoteObjects());
+      }
+      if (typeof pruneOrphanAvatarObjects === "function") {
+        await resolveMaybePromise(pruneOrphanAvatarObjects());
+      }
       log(session, "db.vacuum", { targetType: "system" });
       res.json({ ok: true });
     } catch (err) {

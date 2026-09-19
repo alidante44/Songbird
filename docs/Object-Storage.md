@@ -1,4 +1,4 @@
-# Object Storage & Media Processing
+# Object Storage
 
 Songbird supports a pluggable storage architecture that allows you to choose between local disk storage and S3-compatible remote object storage. When combined with the unified **Songbird Media Worker**, Songbird provides high-performance, asynchronous video transcoding, thumbnail extraction, and media optimization across single-server or distributed cloud environments.
 
@@ -39,14 +39,14 @@ When `STORAGE_DRIVER=remote` is active, Songbird uses a direct client-to-bucket 
 
 ### Direct Upload Flow
 
-1. **Presign Request (`POST /api/uploads/presign`)**:
-   - The client browser sends file metadata (`filename`, `mimeType`, `fileSize`, etc.) to the Songbird backend.
-   - The server validates authentication, checks file size limits (`FILE_UPLOAD_MAX_SIZE_MB`), generates a unique storage key (`uploads/<timestamp>_<hash>.<ext>`), and generates a temporary S3 presigned `PUT` URL via `@aws-sdk/s3-request-presigner`.
+1. **Presign Request**:
+   - The client browser sends file metadata to the Songbird backend.
+   - The server validates authentication, checks file size limits, generates a unique storage key, and generates a temporary S3 presigned `PUT` URL.
    - The server records a pending upload record in the `pending_presigned_uploads` database table.
-2. **Direct Browser Upload (`PUT <uploadUrl>`)**:
+2. **Direct Browser Upload**:
    - The client browser uploads the file payload directly to the Cloudflare R2 / S3 storage endpoint using the presigned URL.
-3. **Upload Completion (`POST /api/uploads/complete` or Message Submit)**:
-   - Once the HTTP `PUT` succeeds, the client notifies Songbird or attaches the file to a message request.
+3. **Upload Completion**:
+   - Once the upload succeeds, the client notifies Songbird or attaches the file to a message request.
    - Songbird links the `storageKey` to the message file database (`chat_message_files`) and calls `removePendingPresignedUploads` to clean up the pending tracking record.
 
 ### Advantages of Direct Presigned Uploads

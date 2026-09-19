@@ -11,6 +11,36 @@ describe("secrets.js", () => {
     delete process.env.VAPID_SUBJECT;
   });
 
+  function makeDbMocks(dbStore) {
+    const mockGetRow = async (query) => {
+      const compiled =
+        typeof query?.toSQL === "function" ? query.toSQL() : null;
+      const bindings = compiled?.bindings || query?.bindings || [];
+      const key = bindings[0];
+      if (dbStore[key]) {
+        return { value: dbStore[key] };
+      }
+      return null;
+    };
+    const writtenKeys = [];
+    const mockRun = async (query) => {
+      const compiled =
+        typeof query?.toSQL === "function" ? query.toSQL() : null;
+      const bindings = compiled?.bindings || query?.bindings || [];
+      if (bindings.length >= 2) {
+        dbStore[bindings[0]] = bindings[1];
+        writtenKeys.push(bindings[0]);
+      }
+    };
+    return { mockGetRow, mockRun, writtenKeys };
+  }
+
+  const noFsWrites = {
+    existsSync: () => false,
+    readFileSync: () => "",
+    writeFileSync: () => {},
+  };
+
   test("normalizeEnvSecret strips surrounding quotes", () => {
     expect(normalizeEnvSecret('"secret"')).toBe("secret");
     expect(normalizeEnvSecret("'secret'")).toBe("secret");
@@ -137,12 +167,9 @@ describe("secrets.js", () => {
     expect(dbStore.VAPID_SUBJECT).toBe("mailto:env@example.com");
   });
 
-  test("ensureSystemSecrets prefers env secrets over DB values and updates DB with env secret without overwriting .env", async () => {
+  test("rotatable secrets still prefer env and update DB, while immutable secrets restore from DB", async () => {
     process.env.ADMIN_API_TOKEN = "new-env-token";
-    process.env.STORAGE_ENCRYPTION_KEY = "new-env-storage-key";
     process.env.WEBHOOK_SECRET = "new-env-webhook-secret";
-    process.env.VAPID_PUBLIC_KEY = "new-env-vapid-pub";
-    process.env.VAPID_PRIVATE_KEY = "new-env-vapid-priv";
 
     const dbStore = {
       ADMIN_API_TOKEN: "original-db-token",
@@ -153,28 +180,10 @@ describe("secrets.js", () => {
       VAPID_SUBJECT: "mailto:original@example.com",
     };
 
-    const mockGetRow = async (query) => {
-      const compiled =
-        typeof query?.toSQL === "function" ? query.toSQL() : null;
-      const bindings = compiled?.bindings || query?.bindings || [];
-      const key = bindings[0];
-      if (dbStore[key]) {
-        return { value: dbStore[key] };
-      }
-      return null;
-    };
+    const { mockGetRow, mockRun } = makeDbMocks(dbStore);
 
-    let envContent = "STORAGE_ENCRYPTION_KEY=new-env-storage-key\n";
+    let envContent = "ADMIN_API_TOKEN=new-env-token\n";
     let envUpdated = {};
-    const mockRun = async (query) => {
-      const compiled =
-        typeof query?.toSQL === "function" ? query.toSQL() : null;
-      const bindings = compiled?.bindings || query?.bindings || [];
-      if (bindings.length >= 2) {
-        dbStore[bindings[0]] = bindings[1];
-      }
-    };
-
     await ensureSystemSecrets({
       dbGetRow: mockGetRow,
       dbRun: mockRun,
@@ -192,22 +201,126 @@ describe("secrets.js", () => {
       },
     });
 
-    // Env secrets MUST win (order of truth: env > database > generate):
+    // Rotatable auth secrets: env MUST win and DB MUST follow:
     expect(process.env.ADMIN_API_TOKEN).toBe("new-env-token");
-    expect(process.env.STORAGE_ENCRYPTION_KEY).toBe("new-env-storage-key");
     expect(process.env.WEBHOOK_SECRET).toBe("new-env-webhook-secret");
-    expect(process.env.VAPID_PUBLIC_KEY).toBe("new-env-vapid-pub");
-    expect(process.env.VAPID_PRIVATE_KEY).toBe("new-env-vapid-priv");
-
-    // DB store MUST be updated to the env values:
     expect(dbStore.ADMIN_API_TOKEN).toBe("new-env-token");
-    expect(dbStore.STORAGE_ENCRYPTION_KEY).toBe("new-env-storage-key");
     expect(dbStore.WEBHOOK_SECRET).toBe("new-env-webhook-secret");
-    expect(dbStore.VAPID_PUBLIC_KEY).toBe("new-env-vapid-pub");
-    expect(dbStore.VAPID_PRIVATE_KEY).toBe("new-env-vapid-priv");
 
-    // .env file must NOT be overwritten with the old DB value:
-    expect(envUpdated.STORAGE_ENCRYPTION_KEY).toBeUndefined();
+    // Immutable secrets: restored from DB, DB untouched:
+    expect(process.env.STORAGE_ENCRYPTION_KEY).toBe("original-db-storage-key");
+    expect(process.env.VAPID_PUBLIC_KEY).toBe("original-db-vapid-pub");
+    expect(process.env.VAPID_PRIVATE_KEY).toBe("original-db-vapid-priv");
+    expect(dbStore.STORAGE_ENCRYPTION_KEY).toBe("original-db-storage-key");
+    expect(dbStore.VAPID_PUBLIC_KEY).toBe("original-db-vapid-pub");
+
+    // .env file is backfilled from the DB value for keys missing from the environment:
+    expect(envUpdated.STORAGE_ENCRYPTION_KEY).toBe("original-db-storage-key");
+  });
+
+  test("STORAGE_ENCRYPTION_KEY mismatch throws instead of overwriting the DB value", async () => {
+    process.env.STORAGE_ENCRYPTION_KEY = "wrong-env-storage-key";
+
+    const dbStore = { STORAGE_ENCRYPTION_KEY: "original-db-storage-key" };
+    const { mockGetRow, mockRun } = makeDbMocks(dbStore);
+
+    await expect(
+      ensureSystemSecrets({
+        dbGetRow: mockGetRow,
+        dbRun: mockRun,
+        projectRootDir: "/tmp",
+        fsImpl: noFsWrites,
+      }),
+    ).rejects.toThrow(
+      /STORAGE_ENCRYPTION_KEY.*does not match the value stored in the database/,
+    );
+
+    expect(dbStore.STORAGE_ENCRYPTION_KEY).toBe("original-db-storage-key");
+  });
+
+  test("matching STORAGE_ENCRYPTION_KEY does not throw or rewrite the DB value", async () => {
+    process.env.STORAGE_ENCRYPTION_KEY = "shared-storage-key";
+
+    const dbStore = { STORAGE_ENCRYPTION_KEY: "shared-storage-key" };
+    const { mockGetRow, mockRun, writtenKeys } = makeDbMocks(dbStore);
+
+    await ensureSystemSecrets({
+      dbGetRow: mockGetRow,
+      dbRun: mockRun,
+      projectRootDir: "/tmp",
+      fsImpl: noFsWrites,
+    });
+
+    expect(process.env.STORAGE_ENCRYPTION_KEY).toBe("shared-storage-key");
+    expect(writtenKeys.filter((k) => k === "STORAGE_ENCRYPTION_KEY")).toHaveLength(0);
+  });
+
+  test("VAPID keypair mismatch throws instead of overwriting the DB values", async () => {
+    process.env.VAPID_PUBLIC_KEY = "new-env-vapid-pub";
+    process.env.VAPID_PRIVATE_KEY = "new-env-vapid-priv";
+
+    const dbStore = {
+      VAPID_PUBLIC_KEY: "original-db-vapid-pub",
+      VAPID_PRIVATE_KEY: "original-db-vapid-priv",
+      VAPID_SUBJECT: "mailto:original@example.com",
+    };
+    const { mockGetRow, mockRun } = makeDbMocks(dbStore);
+
+    await expect(
+      ensureSystemSecrets({
+        dbGetRow: mockGetRow,
+        dbRun: mockRun,
+        projectRootDir: "/tmp",
+        fsImpl: noFsWrites,
+      }),
+    ).rejects.toThrow(/VAPID.*do not match the values stored in the database/);
+
+    expect(dbStore.VAPID_PUBLIC_KEY).toBe("original-db-vapid-pub");
+    expect(dbStore.VAPID_PRIVATE_KEY).toBe("original-db-vapid-priv");
+  });
+
+  test("VAPID subject change alone updates the DB subject without throwing", async () => {
+    process.env.VAPID_PUBLIC_KEY = "original-db-vapid-pub";
+    process.env.VAPID_PRIVATE_KEY = "original-db-vapid-priv";
+    process.env.VAPID_SUBJECT = "mailto:new@example.com";
+
+    const dbStore = {
+      VAPID_PUBLIC_KEY: "original-db-vapid-pub",
+      VAPID_PRIVATE_KEY: "original-db-vapid-priv",
+      VAPID_SUBJECT: "mailto:original@example.com",
+    };
+    const { mockGetRow, mockRun } = makeDbMocks(dbStore);
+
+    await ensureSystemSecrets({
+      dbGetRow: mockGetRow,
+      dbRun: mockRun,
+      projectRootDir: "/tmp",
+      fsImpl: noFsWrites,
+    });
+
+    expect(process.env.VAPID_PUBLIC_KEY).toBe("original-db-vapid-pub");
+    expect(dbStore.VAPID_SUBJECT).toBe("mailto:new@example.com");
+  });
+
+  test("partial VAPID env pair keeps DB values without throwing", async () => {
+    process.env.VAPID_PUBLIC_KEY = "lonely-env-pub";
+
+    const dbStore = {
+      VAPID_PUBLIC_KEY: "original-db-vapid-pub",
+      VAPID_PRIVATE_KEY: "original-db-vapid-priv",
+    };
+    const { mockGetRow, mockRun } = makeDbMocks(dbStore);
+
+    await ensureSystemSecrets({
+      dbGetRow: mockGetRow,
+      dbRun: mockRun,
+      projectRootDir: "/tmp",
+      fsImpl: noFsWrites,
+    });
+
+    expect(process.env.VAPID_PUBLIC_KEY).toBe("original-db-vapid-pub");
+    expect(process.env.VAPID_PRIVATE_KEY).toBe("original-db-vapid-priv");
+    expect(dbStore.VAPID_PUBLIC_KEY).toBe("original-db-vapid-pub");
   });
 
   test("updateEnvValue does not write to file if content is unchanged", () => {
