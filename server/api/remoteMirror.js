@@ -91,7 +91,9 @@ function registerRemoteMirrorRoutes(app, deps) {
     }
     if (status !== "ready" || !storageKey) {
       console.warn(
-        `[remote-mirror] Job ${jobId} failed: ${error || "no storage key"}`,
+        "[remote-mirror] Job %s failed: %s",
+        String(jobId),
+        String(error || "no storage key"),
       );
       return res.json({ ok: true, attached: false });
     }
@@ -134,8 +136,9 @@ function registerRemoteMirrorRoutes(app, deps) {
       return res.json({ ok: true, attached: true });
     } catch (attachError) {
       console.warn(
-        `[remote-mirror] Attach failed for job ${jobId}:`,
-        attachError?.message || attachError,
+        "[remote-mirror] Attach failed for job %s: %s",
+        String(jobId),
+        String(attachError?.message || attachError),
       );
       return res.json({ ok: true, attached: false });
     }

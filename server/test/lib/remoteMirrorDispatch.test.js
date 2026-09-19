@@ -96,7 +96,7 @@ describe("dispatchMirrorJob", () => {
     expect(res.dispatched).toBe(true);
     const [, opts] = fetchImpl.mock.calls[0];
     const body = JSON.parse(opts.body);
-    expect(body.downloadUrl.startsWith("https://app.example.com")).toBe(true);
+    expect(body.downloadUrl.startsWith("https://app.example.com/")).toBe(true);
   });
 
   test("a full WEBHOOK_URL callback path is reduced to the server origin", async () => {

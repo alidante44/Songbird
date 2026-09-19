@@ -65,7 +65,7 @@ describe("Avatar S3 Client Helpers", () => {
             }),
           };
         }
-        if (url.startsWith("https://s3.example.com")) {
+        if (url.startsWith("https://s3.example.com/")) {
           return {
             ok: true,
             status: 200,
