@@ -71,6 +71,7 @@ cd /opt/songbird/server
 | [`npm run db:file:delete`](#db-file-delete) | حذف فایل های پیام آپلودشده و/یا آواتارها. |
 | [`npm run db:message:generate`](#db-message-generate) | تولید پیام های تصادفی بین دو کاربر. |
 | [`npm run remote:configure`](#remote-configure) | پیکربندی اعتبارنامه های Telegram برای کانال ریموت. |
+| [`npm run storage:migrate`](#storage-migrate) | مهاجرت کلیدهای ذخیره سازی ابری به ساختار یکپارچه و به روزرسانی دیتابیس. |
 
 ## پشتیبان‌گیری و بازیابی
 
@@ -507,12 +508,34 @@ npm run remote:configure
 
 برای راهنمای کامل، از جمله نحوه دریافت اعتبارنامه های API، به [راه اندازی Remote Channel](./Remote-Channel-Setup.md) مراجعه کنید.
 
+
+## فضای ذخیره سازی ابری
+
+### `storage:migrate`
+
+مهاجرت کلیدهای ذخیره سازی ابری از ساختار قدیمی سطح ریشه به ساختار یکپارچه و به روزرسانی ستون ها در جداول دیتابیس.
+
+| فلگ | حالت کوتاه | توضیح |
+|---|---|---|
+| `--dry-run` | | پیش نمایش اشیای قدیمی. |
+| `--yes` | `-y` | رد کردن پرسش تایید تعاملی. |
+| `--help` | `-h` | نمایش راهنمای دستور. |
+
+```bash
+npm run storage:migrate
+```
+
+:::warning بررسی عدم تداخل با سرور فعال
+دستور `storage:migrate` در صورت در حال اجرا بودن سرور Songbird متوقف میشود تا از ایجاد race condition با آپلودهای فعال کاربران جلوگیری کند. قبل از اجرا، سرور را متوقف کنید.
+:::
+
 ## اجرای دستورها از طریق Docker
 
-هر اسکریپت npm را داخل کانتینر درحال‌اجرا با پیشوند `--prefix /app/server` اجرا کنید:
+هر اسکریپت npm را داخل کانتینر درحال اجرا با پیشوند `--prefix /app/server` اجرا کنید:
 
 ```bash
 docker compose exec songbird npm --prefix /app/server run db:backup
 docker compose exec songbird npm --prefix /app/server run db:migrate
 docker compose exec songbird npm --prefix /app/server run db:inspect
+docker compose exec songbird npm --prefix /app/server run storage:migrate -- -y
 ```
