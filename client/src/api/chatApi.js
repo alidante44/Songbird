@@ -595,7 +595,7 @@ export async function uploadAvatarFile(file, options = {}) {
         storageKey: presignRes.storageKey,
       };
     }
-  } catch (err) {
+  } catch {
     // If presigning fails or returns non-s3, fall back gracefully
   }
 

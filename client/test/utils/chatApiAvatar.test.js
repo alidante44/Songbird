@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, test, expect, afterEach, vi } from "vitest";
 import {
   presignAvatarUpload,
   uploadAvatarFile,
@@ -52,7 +52,7 @@ describe("Avatar S3 Client Helpers", () => {
   describe("uploadAvatarFile", () => {
     test("uploads directly to S3 presigned URL when type is s3", async () => {
       const file = new File(["bytes"], "pic.jpg", { type: "image/jpeg" });
-      const fetchMock = vi.fn().mockImplementation(async (url, init) => {
+      const fetchMock = vi.fn().mockImplementation(async (url) => {
         if (url === "/api/uploads/presign") {
           return {
             ok: true,
