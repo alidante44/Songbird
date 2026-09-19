@@ -1,3 +1,20 @@
+## 0.12.2
+
+### New Features
+
+- 🖼️ Object storage avatar uploads
+- 🪣 Unified object-storage layout
+- 📡 Guided Telegram remote channel setup in the admin panel with Services tab status and remote media mirroring via worker
+- 📋 Worker log tab in the admin panel
+- 🔗 Object storage proxy support
+
+### Bug Fixes
+
+- 🔒 Presign rate limiting on upload endpoints
+- 👤 Postgres banned-user handling on login
+- 📅 Postgres timestamp defaults causing Invalid Date on new messages
+- 🛡️ Fail fast on secret mismatch instead of overwriting the database
+
 ## 0.12.1
 
 ### Bug Fixes
