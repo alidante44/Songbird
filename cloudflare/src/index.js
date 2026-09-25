@@ -35,6 +35,45 @@ export default {
   if(url.pathname==="/api/logout"&&method==="POST"){await deleteRequestSession(request,env);return json({ok:true},200,{"set-cookie":clearSessionCookie()});}
 
   const user=await requireUser(request,env);
+  if(url.pathname==="/api/profile"&&method==="GET"){
+   if(!user)return json({error:"Not authenticated."},401); const name=String(url.searchParams.get("username")||user.username).trim().toLowerCase();
+   const p=await env.DB.prepare("SELECT id,username,nickname,avatar_key,status,role FROM users WHERE username=?").bind(name).first();
+   return p?json(publicUser(p)):json({error:"User not found."},404);
+  }
+  if(url.pathname==="/api/profile"&&method==="PUT"){
+   if(!user)return json({error:"Not authenticated."},401); const b=await body(request),name=String(b.username||user.username).trim().toLowerCase(),nick=String(b.nickname||"").trim()||null;
+   if(name.length<3||name.length>64||!usernameRe.test(name))return json({error:"Invalid username."},400);
+   const taken=await env.DB.prepare("SELECT id FROM users WHERE username=? AND id<>?").bind(name,user.id).first(); if(taken)return json({error:"Username already exists."},409);
+   await env.DB.prepare("UPDATE users SET username=?,nickname=?,updated_at=? WHERE id=?").bind(name,nick,Date.now(),user.id).run();
+   return json(publicUser({...user,username:name,nickname:nick}));
+  }
+  if(url.pathname==="/api/status"&&method==="PUT"){
+   if(!user)return json({error:"Not authenticated."},401); const b=await body(request),status=String(b.status||"");
+   if(!["online","invisible"].includes(status))return json({error:"Invalid status."},400);
+   await env.DB.prepare("UPDATE users SET status=?,updated_at=? WHERE id=?").bind(status,Date.now(),user.id).run(); return json({ok:true,status});
+  }
+  if(url.pathname==="/api/password"&&method==="PUT"){
+   if(!user)return json({error:"Not authenticated."},401); const b=await body(request);
+   const full=await env.DB.prepare("SELECT password_hash FROM users WHERE id=?").bind(user.id).first();
+   if(!(await verifyPassword(String(b.currentPassword||""),full?.password_hash)))return json({error:"Invalid credentials."},401);
+   if(String(b.newPassword||"").length<6)return json({error:"Password must be at least 6 characters."},400);
+   await env.DB.prepare("UPDATE users SET password_hash=?,updated_at=? WHERE id=?").bind(await hashPassword(String(b.newPassword)),Date.now(),user.id).run(); return json({ok:true});
+  }
+  if(url.pathname==="/api/profile/delete"&&method==="POST"){
+   if(!user)return json({error:"Not authenticated."},401); const b=await body(request),full=await env.DB.prepare("SELECT password_hash,avatar_key FROM users WHERE id=?").bind(user.id).first();
+   if(!(await verifyPassword(String(b.password||""),full?.password_hash)))return json({error:"Invalid credentials."},401);
+   if(full?.avatar_key)await env.MEDIA.delete(full.avatar_key); await env.DB.prepare("DELETE FROM users WHERE id=?").bind(user.id).run();
+   return json({ok:true},200,{"set-cookie":clearSessionCookie()});
+  }
+  if(url.pathname==="/api/profile/avatar"&&method==="POST"){
+   if(!user)return json({error:"Not authenticated."},401); const form=await request.formData(),file=form.get("avatar");
+   if(!(file instanceof File))return json({error:"Avatar file is required."},400); if(!String(file.type).startsWith("image/"))return json({error:"Avatar must be an image."},400);
+   const max=Math.min(Number(env.MAX_MEDIA_BYTES||20*1024*1024),10*1024*1024); if(file.size>max)return json({error:"file_too_large"},413);
+   const old=await env.DB.prepare("SELECT avatar_key FROM users WHERE id=?").bind(user.id).first(); const key="media/avatar-"+crypto.randomUUID();
+   await env.MEDIA.put(key,await file.arrayBuffer(),{expirationTtl:mediaTtl(env),metadata:{contentType:file.type,size:file.size,ownerId:user.id,avatar:true}});
+   await env.DB.prepare("UPDATE users SET avatar_key=?,updated_at=? WHERE id=?").bind(key,Date.now(),user.id).run(); if(old?.avatar_key)await env.MEDIA.delete(old.avatar_key);
+   return json({avatarUrl:"/api/media/"+key.replace(/^media\\//,""),sizeBytes:file.size,maxFileSizeBytes:max});
+  }
   if(url.pathname==="/api/chats"&&method==="GET"){if(!user)return json({error:"Not authenticated."},401);return json(await listChats(env,user.id));}
   if(url.pathname==="/api/chats"&&method==="POST"){if(!user)return json({error:"Not authenticated."},401);try{return json(await createChat(env,user,await body(request)),201);}catch(e){return json({error:e.message},400);}}
   // Compatibility routes used by the existing Songbird client.
@@ -72,7 +111,7 @@ export default {
    if(!user)return json({error:"Not authenticated."},401); const b=await body(request),max=Number(env.MAX_MEDIA_BYTES||20*1024*1024);
    if(Number(b.fileSize||0)>max)return json({error:"file_too_large"},413);
    const key="media/"+crypto.randomUUID();
-   return json({type:"kv",storageKey:key,uploadUrl:"/api/media?key="+encodeURIComponent(key),downloadUrl:"/api/media/"+key.replace(/^media\\//,""),expiresIn:mediaTtl(env)});
+   return json({type:"remote",storageKey:key,fileId:key,uploadUrl:"/api/media?key="+encodeURIComponent(key),downloadUrl:"/api/media/"+key.replace(/^media\\//,""),expiresIn:mediaTtl(env)});
   }
 
   const msgMatch=url.pathname.match(/^\\/api\\/chats\\/([^/]+)\\/messages$/);
