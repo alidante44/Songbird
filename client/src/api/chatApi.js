@@ -376,6 +376,9 @@ export const deletePendingMessage = (clientId) =>
     method: "DELETE",
   });
 
+export const pollRealtimeEvents = (cursor = 0) =>
+  apiFetch(`${API_BASE}/api/events?after=${encodeURIComponent(cursor)}`);
+
 export const getSseStreamUrl = (username) =>
   `${API_BASE}/api/events?username=${encodeURIComponent(username)}`;
 
