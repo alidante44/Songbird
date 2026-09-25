@@ -13,8 +13,8 @@ function unb64(s){ return Uint8Array.from(atob(s),c=>c.charCodeAt(0)); }
 
 export async function hashPassword(password, salt = crypto.getRandomValues(new Uint8Array(16))) {
   const key=await crypto.subtle.importKey("raw",enc.encode(password),"PBKDF2",false,["deriveBits"]);
-  const bits=await crypto.subtle.deriveBits({name:"PBKDF2",salt,iterations:210000,hash:"SHA-256"},key,256);
-  return "pbkdf2-sha256$210000$"+b64(salt)+"$"+b64(bits);
+  const bits=await crypto.subtle.deriveBits({name:"PBKDF2",salt,iterations:100000,hash:"SHA-256"},key,256);
+  return "pbkdf2-sha256$100000$"+b64(salt)+"$"+b64(bits);
 }
 export async function verifyPassword(password, stored) {
   const [kind,it,saltB64,want]=String(stored||"").split("$");
