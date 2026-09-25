@@ -37,6 +37,44 @@ export default {
   const user=await requireUser(request,env);
   if(url.pathname==="/api/chats"&&method==="GET"){if(!user)return json({error:"Not authenticated."},401);return json(await listChats(env,user.id));}
   if(url.pathname==="/api/chats"&&method==="POST"){if(!user)return json({error:"Not authenticated."},401);try{return json(await createChat(env,user,await body(request)),201);}catch(e){return json({error:e.message},400);}}
+  // Compatibility routes used by the existing Songbird client.
+  if(url.pathname==="/api/chats/dm"&&method==="POST"){
+   if(!user)return json({error:"Not authenticated."},401); const b=await body(request);
+   const target=await env.DB.prepare("SELECT id FROM users WHERE username=?").bind(String(b.to||"").trim().toLowerCase()).first();
+   if(!target)return json({error:"User not found."},404);
+   try{return json(await createChat(env,user,{type:"dm",memberIds:[target.id]}),201);}catch(e){return json({error:e.message},400);}
+  }
+  if(url.pathname==="/api/chats/group"&&method==="POST"){
+   if(!user)return json({error:"Not authenticated."},401); const b=await body(request), names=Array.isArray(b.members)?b.members:[];
+   const memberIds=[]; for(const name of names){const x=await env.DB.prepare("SELECT id FROM users WHERE username=?").bind(String(name).trim().toLowerCase()).first();if(x)memberIds.push(x.id);}
+   try{return json(await createChat(env,user,{...b,type:b.type==="channel"?"channel":"group",memberIds}),201);}catch(e){return json({error:e.message},400);}
+  }
+  if(url.pathname==="/api/users"&&method==="GET"){
+   if(!user)return json({error:"Not authenticated."},401); const q=String(url.searchParams.get("query")||"").trim().toLowerCase();
+   const r=await env.DB.prepare("SELECT id,username,nickname,avatar_key,status,role FROM users WHERE id<>? AND (username LIKE ? OR nickname LIKE ?) ORDER BY username LIMIT 30").bind(user.id,"%"+q+"%","%"+q+"%").all();
+   return json((r.results||[]).map(publicUser));
+  }
+  if(url.pathname==="/api/messages"&&method==="GET"){
+   if(!user)return json({error:"Not authenticated."},401); const chatId=url.searchParams.get("chatId");
+   if(!chatId||!(await isMember(env,chatId,user.id)))return json({error:"Forbidden."},403);
+   return json(await getMessages(env,chatId,url.searchParams.get("limit"),Number(url.searchParams.get("before"))||Number.MAX_SAFE_INTEGER));
+  }
+  if(url.pathname==="/api/messages"&&method==="POST"){
+   if(!user)return json({error:"Not authenticated."},401); const b=await body(request),chatId=String(b.chatId||"");
+   try{return json(await sendMessage(env,user,chatId,{text:b.text??b.message,replyToId:b.replyToId,files:b.files||b.presignedFiles||[]}),201);}catch(e){return json({error:e.message},e.message==="forbidden"?403:400);}
+  }
+  if(url.pathname.match(/^\\/api\\/messages\\/[^/]+$/)&&method==="GET"){
+   if(!user)return json({error:"Not authenticated."},401); const chatId=decodeURIComponent(url.pathname.slice("/api/messages/".length));
+   if(!(await isMember(env,chatId,user.id)))return json({error:"Forbidden."},403);
+   return json(await getMessages(env,chatId,url.searchParams.get("limit"),Number(url.searchParams.get("before"))||Number.MAX_SAFE_INTEGER));
+  }
+  if(url.pathname==="/api/uploads/presign"&&method==="POST"){
+   if(!user)return json({error:"Not authenticated."},401); const b=await body(request),max=Number(env.MAX_MEDIA_BYTES||20*1024*1024);
+   if(Number(b.fileSize||0)>max)return json({error:"file_too_large"},413);
+   const key="media/"+crypto.randomUUID();
+   return json({type:"kv",storageKey:key,uploadUrl:"/api/media?key="+encodeURIComponent(key),downloadUrl:"/api/media/"+key.replace(/^media\\//,""),expiresIn:mediaTtl(env)});
+  }
+
   const msgMatch=url.pathname.match(/^\\/api\\/chats\\/([^/]+)\\/messages$/);
   if(msgMatch&&method==="GET"){if(!user)return json({error:"Not authenticated."},401);if(!(await isMember(env,msgMatch[1],user.id)))return json({error:"Forbidden."},403);return json(await getMessages(env,msgMatch[1],url.searchParams.get("limit"),Number(url.searchParams.get("before"))||Number.MAX_SAFE_INTEGER));}
   if(msgMatch&&method==="POST"){if(!user)return json({error:"Not authenticated."},401);try{return json(await sendMessage(env,user,msgMatch[1],await body(request)),201);}catch(e){return json({error:e.message},e.message==="forbidden"?403:400);}}
@@ -46,7 +84,7 @@ export default {
    const type=request.headers.get("content-type")||"application/octet-stream", length=Number(request.headers.get("content-length")||0), max=Number(env.MAX_MEDIA_BYTES||20*1024*1024);
    if(length&&length>max)return json({error:"file_too_large"},413);
    const data=await request.arrayBuffer(); if(data.byteLength>max)return json({error:"file_too_large"},413);
-   const key="media/"+crypto.randomUUID(); await env.MEDIA.put(key,data,{expirationTtl:mediaTtl(env),metadata:{contentType:type,size:data.byteLength,ownerId:u.id}});
+   const requested=url.searchParams.get("key"); const key=requested&&requested.startsWith("media/")?requested:"media/"+crypto.randomUUID(); await env.MEDIA.put(key,data,{expirationTtl:mediaTtl(env),metadata:{contentType:type,size:data.byteLength,ownerId:u.id}});
    return json({key,size:data.byteLength,expiresIn:mediaTtl(env)},201);
   }
   if(url.pathname.startsWith("/api/media/")&&method==="GET"){
