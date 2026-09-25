@@ -4,9 +4,9 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "npm run db:remote && wrangler deploy",
+    "deploy": "npm run db:remote && npx --yes wrangler@4 deploy",
     "db:local": "wrangler d1 execute songbird-db --local --file=./schema.sql",
-    "db:remote": "wrangler d1 execute songbird-db --remote --file=./schema.sql",
-    "deploy:worker": "wrangler deploy"
+    "db:remote": "npx --yes wrangler@4 d1 execute songbird-db --remote --file=./schema.sql",
+    "deploy:worker": "npx --yes wrangler@4 deploy"
   }
 }
