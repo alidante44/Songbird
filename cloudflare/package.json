@@ -8,8 +8,5 @@
     "db:local": "wrangler d1 execute songbird-db --local --file=./schema.sql",
     "db:remote": "wrangler d1 execute songbird-db --remote --file=./schema.sql",
     "deploy:worker": "wrangler deploy"
-  },
-  "devDependencies": {
-    "wrangler": "^4.0.0"
   }
 }
