@@ -52,5 +52,8 @@ export async function sendMessage(env,user,chatId,b){
    .bind(crypto.randomUUID(),id,key,String(f.filename||"")||null,obj.metadata?.contentType||null,obj.metadata?.size||obj.value.byteLength,now+Number(env.MEDIA_TTL_DAYS||30)*86400000,now).run();
  }
  await env.DB.prepare("UPDATE chats SET updated_at=? WHERE id=?").bind(now,chatId).run();
+ const members=await env.DB.prepare("SELECT user_id FROM chat_members WHERE chat_id=?").bind(chatId).all();
+ const event={type:"chat_message",chatId,messageId:id,username:user.username,body:text||"",createdAt:now};
+ for(const m of members.results||[]) await env.DB.prepare("INSERT INTO realtime_events(user_id,event_type,payload,created_at) VALUES(?,?,?,?)").bind(m.user_id,"chat_message",JSON.stringify(event),now).run();
  return {id,chat_id:chatId,sender_id:user.id,text:text||null,created_at:now};
 }
