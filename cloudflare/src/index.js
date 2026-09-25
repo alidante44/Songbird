@@ -1,4 +1,4 @@
-import { hashPassword, verifyPassword, createSession, getUserFromRequest, deleteRequestSession, sessionCookie, clearSessionCookie } from "./auth.js";
+import { hashPassword, verifyPassword, createSession, getUserFromRequest, deleteRequestSession, sessionCookie, clearSessionCookie } from "./auth.js";\nimport { listChats, createChat, getMessages, sendMessage, isMember } from "./chats.js";
 
 const json=(body,status=200,headers={})=>new Response(JSON.stringify(body),{status,headers:{"content-type":"application/json; charset=utf-8",...headers}});
 const mediaTtl=env=>Math.max(86400,Number(env.MEDIA_TTL_DAYS||30)*86400);
@@ -33,6 +33,13 @@ export default {
 
   if(url.pathname==="/api/me"&&method==="GET"){const u=await requireUser(request,env);return u?json(publicUser(u)):json({error:"Not authenticated."},401);}
   if(url.pathname==="/api/logout"&&method==="POST"){await deleteRequestSession(request,env);return json({ok:true},200,{"set-cookie":clearSessionCookie()});}
+
+  const user=await requireUser(request,env);
+  if(url.pathname==="/api/chats"&&method==="GET"){if(!user)return json({error:"Not authenticated."},401);return json(await listChats(env,user.id));}
+  if(url.pathname==="/api/chats"&&method==="POST"){if(!user)return json({error:"Not authenticated."},401);try{return json(await createChat(env,user,await body(request)),201);}catch(e){return json({error:e.message},400);}}
+  const msgMatch=url.pathname.match(/^\\/api\\/chats\\/([^/]+)\\/messages$/);
+  if(msgMatch&&method==="GET"){if(!user)return json({error:"Not authenticated."},401);if(!(await isMember(env,msgMatch[1],user.id)))return json({error:"Forbidden."},403);return json(await getMessages(env,msgMatch[1],url.searchParams.get("limit"),Number(url.searchParams.get("before"))||Number.MAX_SAFE_INTEGER));}
+  if(msgMatch&&method==="POST"){if(!user)return json({error:"Not authenticated."},401);try{return json(await sendMessage(env,user,msgMatch[1],await body(request)),201);}catch(e){return json({error:e.message},e.message==="forbidden"?403:400);}}
 
   if(url.pathname==="/api/media"&&method==="PUT"){
    const u=await requireUser(request,env); if(!u)return json({error:"Not authenticated."},401);
