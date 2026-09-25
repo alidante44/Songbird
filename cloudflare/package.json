@@ -3,10 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "npm run db:remote && npx --yes wrangler@4 deploy",
-    "db:local": "wrangler d1 execute songbird-db --local --file=./schema.sql",
-    "db:remote": "npx --yes wrangler@4 d1 execute songbird-db --remote --file=./schema.sql",
-    "deploy:worker": "npx --yes wrangler@4 deploy"
+    "dev": "npx wrangler dev",
+    "deploy": "npm run db:remote && npx wrangler deploy",
+    "db:local": "npx wrangler d1 execute songbird-db --local --file=./schema.sql",
+    "db:remote": "npx wrangler d1 execute songbird-db --remote --file=./schema.sql",
+    "deploy:worker": "npx wrangler deploy"
   }
 }
