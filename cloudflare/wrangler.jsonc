@@ -8,7 +8,7 @@
     {
       "binding": "DB",
       "database_name": "songbird-db",
-      "database_id": "REPLACE_WITH_D1_DATABASE_ID"
+      "database_id": "44fb2ac3-4f2c-4587-accb-996d18e32dac"
     }
   ],
   "kv_namespaces": [
