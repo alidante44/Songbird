@@ -1,4 +1,5 @@
 import { hashPassword, verifyPassword, createSession, getUserFromRequest, deleteRequestSession, sessionCookie, clearSessionCookie } from "./auth.js";\nimport { listChats, createChat, getMessages, sendMessage, isMember } from "./chats.js";
+import { getPresence, setTyping, listTyping } from "./realtime.js";
 
 const json=(body,status=200,headers={})=>new Response(JSON.stringify(body),{status,headers:{"content-type":"application/json; charset=utf-8",...headers}});
 const mediaTtl=env=>Math.max(86400,Number(env.MEDIA_TTL_DAYS||30)*86400);
@@ -35,6 +36,22 @@ export default {
   if(url.pathname==="/api/logout"&&method==="POST"){await deleteRequestSession(request,env);return json({ok:true},200,{"set-cookie":clearSessionCookie()});}
 
   const user=await requireUser(request,env);
+  if(url.pathname==="/api/presence"&&method==="GET"){
+   if(!user)return json({error:"Not authenticated."},401);
+   const p=await getPresence(env,url.searchParams.get("username"));
+   return p?json(p):json({error:"User not found."},404);
+  }
+  if(url.pathname==="/api/messages/typing"&&method==="POST"){
+   if(!user)return json({error:"Not authenticated."},401); const b=await body(request),chatId=String(b.chatId||"");
+   if(!chatId||!(await isMember(env,chatId,user.id)))return json({error:"Forbidden."},403);
+   await setTyping(env,chatId,user); return json({ok:true});
+  }
+  const typingMatch=url.pathname.match(/^\\/api\\/chats\\/([^/]+)\\/typing$/);
+  if(typingMatch&&method==="GET"){
+   if(!user)return json({error:"Not authenticated."},401);
+   if(!(await isMember(env,typingMatch[1],user.id)))return json({error:"Forbidden."},403);
+   return json(await listTyping(env,typingMatch[1],user.username));
+  }
   if(url.pathname==="/api/profile"&&method==="GET"){
    if(!user)return json({error:"Not authenticated."},401); const name=String(url.searchParams.get("username")||user.username).trim().toLowerCase();
    const p=await env.DB.prepare("SELECT id,username,nickname,avatar_key,status,role FROM users WHERE username=?").bind(name).first();
