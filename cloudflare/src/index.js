@@ -52,6 +52,13 @@ export default {
    if(!(await isMember(env,typingMatch[1],user.id)))return json({error:"Forbidden."},403);
    return json(await listTyping(env,typingMatch[1],user.username));
   }
+  if(url.pathname==="/api/events"&&method==="GET"){
+   if(!user)return json({error:"Not authenticated."},401);
+   const after=Math.max(0,Number(url.searchParams.get("after")||0));
+   const rows=await env.DB.prepare("SELECT seq,payload FROM realtime_events WHERE user_id=? AND seq>? ORDER BY seq LIMIT 100").bind(user.id,after).all();
+   const events=(rows.results||[]).map(r=>({seq:r.seq,...JSON.parse(r.payload)}));
+   return json({events,cursor:events.length?events[events.length-1].seq:after});
+  }
   if(url.pathname==="/api/profile"&&method==="GET"){
    if(!user)return json({error:"Not authenticated."},401); const name=String(url.searchParams.get("username")||user.username).trim().toLowerCase();
    const p=await env.DB.prepare("SELECT id,username,nickname,avatar_key,status,role FROM users WHERE username=?").bind(name).first();
