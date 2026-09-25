@@ -28,3 +28,5 @@ The Cloudflare implementation therefore replaces those runtime-specific pieces w
 7. Client integration and deployment documentation.
 
 The original `server/` and `worker/` directories remain untouched while the port is developed under `cloudflare/`.
+
+Deployment trigger: Cloudflare production branch is `cloudflare-workers`.
