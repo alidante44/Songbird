@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { getWebSocketUrl } from "../../api/chatApi.js";
+import { getWebSocketUrl, pollRealtimeEvents } from "../../api/chatApi.js";
 import {
   isMessageAuthoredByUser,
   isRemoteChannelMessage,
@@ -122,6 +122,8 @@ export function useChatEvents({
     let reconnectAttempts = 0;
     let useWebSocket = typeof WebSocket !== "undefined";
     let wsOpened = false;
+    let pollTimer = null;
+    let pollCursor = 0;
 
     // Trailing debounce for chat-list reloads. Each event pushes the flush out
     // by LOAD_CHATS_DEBOUNCE_MS so a burst (e.g. bulk deletes, rapid list
@@ -518,12 +520,53 @@ export function useChatEvents({
       }
     };
 
+    const startCloudflarePolling = () => {
+      const tick = async () => {
+        if (!isMounted) return;
+        try {
+          const res = await pollRealtimeEvents(pollCursor);
+          if (res.ok) {
+            const data = await res.json();
+            for (const event of data?.events || []) {
+              handlePolledEvent(event);
+            }
+            pollCursor = Number(data?.cursor || pollCursor);
+            setSseConnected(true);
+          }
+        } catch (_) {
+          setSseConnected(false);
+        }
+        if (isMounted) pollTimer = window.setTimeout(tick, 1500);
+      };
+      void tick();
+    };
+
+    const handlePolledEvent = (payload) => {
+      if (!payload?.type) return;
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("songbird:realtime-event", { detail: payload }));
+      }
+      const chatId = normalizeUuid(payload.chatId) || null;
+      if (payload.type === "chat_message" && chatId) {
+        void loadChatsRef.current?.({ silent: true });
+        if (activeChatIdRef.current && String(activeChatIdRef.current).toLowerCase() === String(chatId).toLowerCase()) {
+          scheduleMessageRefreshRef.current?.(chatId, { preserveHistory: true, tailDelta: true });
+        }
+        const own = String(payload.username || "").toLowerCase() === String(usernameRef.current || "").toLowerCase();
+        if (!own) onIncomingMessageRef.current?.(payload, { isActiveChat: true, isSelectedChat: true, isOwnEvent: false, body: String(payload.body || "") });
+      }
+    };
+
+    // Cloudflare backend exposes cursor-based event polling. Keep the original
+    // WebSocket/SSE path as fallback compatibility for the Node server.
+    startCloudflarePolling();
     void connect();
 
     return () => {
       isMounted = false;
       setSseConnected(false);
       source?.close();
+      if (pollTimer) window.clearTimeout(pollTimer);
       if (sseReconnectRef.current) {
         clearTimeout(sseReconnectRef.current);
       }
