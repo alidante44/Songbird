@@ -116,7 +116,7 @@ export default {
   if(url.pathname==="/api/users"&&method==="GET"){
    if(!user)return json({error:"Not authenticated."},401); const q=String(url.searchParams.get("query")||"").trim().toLowerCase();
    const r=await env.DB.prepare("SELECT id,username,nickname,avatar_key,status,role FROM users WHERE id<>? AND (username LIKE ? OR nickname LIKE ?) ORDER BY username LIMIT 30").bind(user.id,"%"+q+"%","%"+q+"%").all();
-   return json((r.results||[]).map(publicUser));
+   return json({users:(r.results||[]).map(publicUser)});
   }
   if(url.pathname==="/api/messages"&&method==="GET"){
    if(!user)return json({error:"Not authenticated."},401); const chatId=url.searchParams.get("chatId");
