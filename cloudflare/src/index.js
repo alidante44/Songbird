@@ -1,57 +1,53 @@
-const json = (body, status = 200, headers = {}) =>
-  new Response(JSON.stringify(body), {
-    status,
-    headers: { "content-type": "application/json; charset=utf-8", ...headers },
-  });
+import { hashPassword, verifyPassword, createSession, getUserFromRequest, deleteRequestSession, sessionCookie, clearSessionCookie } from "./auth.js";
 
-const mediaTtl = (env) =>
-  Math.max(86400, Number(env.MEDIA_TTL_DAYS || 30) * 86400);
+const json=(body,status=200,headers={})=>new Response(JSON.stringify(body),{status,headers:{"content-type":"application/json; charset=utf-8",...headers}});
+const mediaTtl=env=>Math.max(86400,Number(env.MEDIA_TTL_DAYS||30)*86400);
+const usernameRe=/^[a-z0-9._]+$/;
+const publicUser=u=>({id:u.id,username:u.username,nickname:u.nickname||null,avatarUrl:u.avatar_key?"/api/media/"+u.avatar_key.replace(/^media\//,""):null,status:u.status||"online",role:u.role||"user"});
+
+async function body(request){try{return await request.json();}catch{return {};}}
+async function requireUser(request,env){return getUserFromRequest(request,env);}
 
 export default {
-  async fetch(request, env) {
-    const url = new URL(request.url);
+ async fetch(request,env){
+  const url=new URL(request.url), method=request.method;
+  if(url.pathname==="/api/health"){const db=await env.DB.prepare("SELECT 1 AS ok").first();return json({ok:db?.ok===1,runtime:"cloudflare-workers",database:"d1",media:"kv",mediaTtlDays:Number(env.MEDIA_TTL_DAYS||30)});}
 
-    if (url.pathname === "/api/health") {
-      const db = await env.DB.prepare("SELECT 1 AS ok").first();
-      return json({
-        ok: db?.ok === 1,
-        runtime: "cloudflare-workers",
-        database: "d1",
-        media: "kv",
-        mediaTtlDays: Number(env.MEDIA_TTL_DAYS || 30),
-      });
-    }
+  if(url.pathname==="/api/register"&&method==="POST"){
+   const b=await body(request), username=String(b.username||"").trim().toLowerCase(), password=String(b.password||""), nickname=String(b.nickname||"").trim()||null;
+   if(username.length<3||username.length>64||!usernameRe.test(username)) return json({error:"Invalid username."},400);
+   if(password.length<6) return json({error:"Password must be at least 6 characters."},400);
+   if(await env.DB.prepare("SELECT id FROM users WHERE username=?").bind(username).first()) return json({error:"Username already exists."},409);
+   const id=crypto.randomUUID(), now=Date.now(), passwordHash=await hashPassword(password);
+   await env.DB.prepare("INSERT INTO users(id,username,password_hash,nickname,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?)").bind(id,username,passwordHash,nickname,"online",now,now).run();
+   const s=await createSession(env,id); return json({id,username,nickname,avatarUrl:null,status:"online",role:"user"},200,{"set-cookie":sessionCookie(s.token)});
+  }
 
-    if (url.pathname === "/api/media" && request.method === "PUT") {
-      const type = request.headers.get("content-type") || "application/octet-stream";
-      const length = Number(request.headers.get("content-length") || 0);
-      const max = Number(env.MAX_MEDIA_BYTES || 20 * 1024 * 1024);
-      if (length && length > max) return json({ error: "file_too_large" }, 413);
+  if(url.pathname==="/api/login"&&method==="POST"){
+   const b=await body(request), username=String(b.username||"").trim().toLowerCase(), password=String(b.password||"");
+   const u=await env.DB.prepare("SELECT * FROM users WHERE username=?").bind(username).first();
+   if(!u||!(await verifyPassword(password,u.password_hash))) return json({error:"Invalid credentials."},401);
+   await env.DB.prepare("UPDATE users SET status='online',updated_at=? WHERE id=?").bind(Date.now(),u.id).run();
+   const s=await createSession(env,u.id); return json(publicUser({...u,status:"online"}),200,{"set-cookie":sessionCookie(s.token)});
+  }
 
-      const data = await request.arrayBuffer();
-      if (data.byteLength > max) return json({ error: "file_too_large" }, 413);
+  if(url.pathname==="/api/me"&&method==="GET"){const u=await requireUser(request,env);return u?json(publicUser(u)):json({error:"Not authenticated."},401);}
+  if(url.pathname==="/api/logout"&&method==="POST"){await deleteRequestSession(request,env);return json({ok:true},200,{"set-cookie":clearSessionCookie()});}
 
-      const key = "media/" + crypto.randomUUID();
-      await env.MEDIA.put(key, data, {
-        expirationTtl: mediaTtl(env),
-        metadata: { contentType: type, size: data.byteLength },
-      });
-      return json({ key, size: data.byteLength, expiresIn: mediaTtl(env) }, 201);
-    }
-
-    if (url.pathname.startsWith("/api/media/") && request.method === "GET") {
-      const key = "media/" + url.pathname.slice("/api/media/".length);
-      const result = await env.MEDIA.getWithMetadata(key, "arrayBuffer");
-      if (!result.value) return json({ error: "not_found" }, 404);
-      return new Response(result.value, {
-        headers: {
-          "content-type": result.metadata?.contentType || "application/octet-stream",
-          "cache-control": "private, max-age=300",
-          "x-content-type-options": "nosniff",
-        },
-      });
-    }
-
-    return json({ error: "not_found" }, 404);
-  },
+  if(url.pathname==="/api/media"&&method==="PUT"){
+   const u=await requireUser(request,env); if(!u)return json({error:"Not authenticated."},401);
+   const type=request.headers.get("content-type")||"application/octet-stream", length=Number(request.headers.get("content-length")||0), max=Number(env.MAX_MEDIA_BYTES||20*1024*1024);
+   if(length&&length>max)return json({error:"file_too_large"},413);
+   const data=await request.arrayBuffer(); if(data.byteLength>max)return json({error:"file_too_large"},413);
+   const key="media/"+crypto.randomUUID(); await env.MEDIA.put(key,data,{expirationTtl:mediaTtl(env),metadata:{contentType:type,size:data.byteLength,ownerId:u.id}});
+   return json({key,size:data.byteLength,expiresIn:mediaTtl(env)},201);
+  }
+  if(url.pathname.startsWith("/api/media/")&&method==="GET"){
+   const u=await requireUser(request,env); if(!u)return json({error:"Not authenticated."},401);
+   const key="media/"+url.pathname.slice("/api/media/".length), result=await env.MEDIA.getWithMetadata(key,"arrayBuffer");
+   if(!result.value)return json({error:"not_found"},404);
+   return new Response(result.value,{headers:{"content-type":result.metadata?.contentType||"application/octet-stream","cache-control":"private, max-age=300","x-content-type-options":"nosniff"}});
+  }
+  return json({error:"not_found"},404);
+ }
 };
