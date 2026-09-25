@@ -1,4 +1,5 @@
-import { hashPassword, verifyPassword, createSession, getUserFromRequest, deleteRequestSession, sessionCookie, clearSessionCookie } from "./auth.js";\nimport { listChats, createChat, getMessages, sendMessage, isMember } from "./chats.js";
+import { hashPassword, verifyPassword, createSession, getUserFromRequest, deleteRequestSession, sessionCookie, clearSessionCookie } from "./auth.js";
+import { listChats, createChat, getMessages, sendMessage, isMember } from "./chats.js";
 import { getPresence, setTyping, listTyping } from "./realtime.js";
 
 const json=(body,status=200,headers={})=>new Response(JSON.stringify(body),{status,headers:{"content-type":"application/json; charset=utf-8",...headers}});
