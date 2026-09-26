@@ -125,7 +125,7 @@ export default {
   }
   if(url.pathname==="/api/messages"&&method==="POST"){
    if(!user)return json({error:"Not authenticated."},401); const b=await body(request),chatId=String(b.chatId||"");
-   try{return json(await sendMessage(env,user,chatId,{text:b.text??b.message,replyToId:b.replyToId,files:b.files||b.presignedFiles||[]}),201);}catch(e){return json({error:e.message},e.message==="forbidden"?403:400);}
+   try{return json(await sendMessage(env,user,chatId,{text:b.text??b.message??b.body,replyToId:b.replyToId??b.replyToMessageId,files:b.files||b.presignedFiles||[]}),201);}catch(e){return json({error:e.message},e.message==="forbidden"?403:400);}
   }
   if(url.pathname.match(/^\/api\/messages\/[^/]+$/)&&method==="GET"){
    if(!user)return json({error:"Not authenticated."},401); const chatId=decodeURIComponent(url.pathname.slice("/api/messages/".length));
