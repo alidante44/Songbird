@@ -69,14 +69,14 @@ Full documentation lives at [docs.songbird.website](https://docs.songbird.websit
 
 ## Author
 
-- Maintainer: [@bllackbull](https://github.com/bllackbull)
+- Maintainer: [@bllackbull](https://github.com/bllackbull)[@alidnt1996](https://github.com/alidante44)
 - Contributors: [@nkhalili](https://github.com/nkhalili), [@modos](https://github.com/modos), [@iPmartNetwork](https://github.com/iPmartNetwork)
 
 ## Contributing
 
 - Contributions are welcome.
 - If you want to contribute, contact the maintainer first by opening an issue at: `https://github.com/bllackbull/Songbird/issues`
-- For direct coordination, reach out to [@bllackbull](https://github.com/bllackbull) on GitHub before opening a PR.
+- For direct coordination, reach out to [@alidnt1996](https://github.com/alidante44) on GitHub before opening a PR.
 - Checkout [Contributing](/CONTRIBUTING.md) guideline for more information.
 
 ## Support
