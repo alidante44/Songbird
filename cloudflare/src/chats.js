@@ -7,7 +7,15 @@ export async function listChats(env,userId){
  (SELECT created_at FROM messages m WHERE m.chat_id=c.id ORDER BY m.created_at DESC LIMIT 1) last_message_at
  FROM chats c JOIN chat_members cm ON cm.chat_id=c.id WHERE cm.user_id=?
  ORDER BY COALESCE(last_message_at,c.updated_at) DESC`).bind(userId).all();
- return r.results||[];
+ const chats=r.results||[];
+ for(const chat of chats){
+  const members=await env.DB.prepare(`SELECT u.id,u.username,u.nickname,u.avatar_key,u.status,cm.role
+   FROM chat_members cm JOIN users u ON u.id=cm.user_id
+   WHERE cm.chat_id=? ORDER BY cm.joined_at ASC`).bind(chat.id).all();
+  chat.members=(members.results||[]).map(m=>({...m,avatarUrl:m.avatar_key?"/api/media/"+String(m.avatar_key).replace(/^media\//,""):null}));
+  chat.last_time=chat.last_message_at||chat.updated_at;
+ }
+ return chats;
 }
 export async function createChat(env,user,b){
  const type=String(b.type||"dm").toLowerCase(), now=Date.now(), id=crypto.randomUUID();
