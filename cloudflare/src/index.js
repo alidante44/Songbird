@@ -99,7 +99,7 @@ export default {
    await env.DB.prepare("UPDATE users SET avatar_key=?,updated_at=? WHERE id=?").bind(key,Date.now(),user.id).run(); if(old?.avatar_key)await env.MEDIA.delete(old.avatar_key);
    return json({avatarUrl:"/api/media/"+key.replace(/^media\//,""),sizeBytes:file.size,maxFileSizeBytes:max});
   }
-  if(url.pathname==="/api/chats"&&method==="GET"){if(!user)return json({error:"Not authenticated."},401);return json(await listChats(env,user.id));}
+  if(url.pathname==="/api/chats"&&method==="GET"){if(!user)return json({error:"Not authenticated."},401);return json({chats:await listChats(env,user.id)});}
   if(url.pathname==="/api/chats"&&method==="POST"){if(!user)return json({error:"Not authenticated."},401);try{return json(await createChat(env,user,await body(request)),201);}catch(e){return json({error:e.message},400);}}
   // Compatibility routes used by the existing Songbird client.
   if(url.pathname==="/api/chats/dm"&&method==="POST"){
