@@ -557,10 +557,10 @@ export function useChatEvents({
       }
     };
 
-    // Cloudflare backend exposes cursor-based event polling. Keep the original
-    // WebSocket/SSE path as fallback compatibility for the Node server.
+    // Cloudflare deployment uses cursor-based polling only. Avoid repeatedly
+    // opening unsupported WebSocket/SSE connections, which adds needless
+    // requests and reconnect backoff traffic.
     startCloudflarePolling();
-    void connect();
 
     return () => {
       isMounted = false;
